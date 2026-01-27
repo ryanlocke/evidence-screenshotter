@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Evidence Screenshotter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Evidence Capture</h1>
+    </header>
+
+    <main>
+      <div id="options" class="options">
+        <div class="option-group">
+          <label>Screenshot Type</label>
+          <div class="radio-group">
+            <label class="radio-label">
+              <input type="radio" name="captureType" value="viewport" checked>
+              <span>Visible Area</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="captureType" value="full-page">
+              <span>Full Page</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <button id="captureBtn" class="capture-btn">
+        Capture Page
+      </button>
+
+      <p class="hint">Opens preview where you can customize and save as PDF</p>
+
+      <div id="progress" class="progress hidden">
+        <div class="spinner"></div>
+        <p id="progressText">Capturing...</p>
+      </div>
+
+      <div id="error" class="error hidden">
+        <p id="errorText"></p>
+      </div>
+    </main>
+  </div>
+
+  <script type="module" src="popup.ts"></script>
+</body>
+</html>
