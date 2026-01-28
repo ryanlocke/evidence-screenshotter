@@ -19,7 +19,8 @@ function chromeExtensionPlugin() {
       const htmlFiles = [
         { src: 'src/popup/popup.html', dest: 'popup.html' },
         { src: 'src/offscreen/offscreen.html', dest: 'offscreen.html' },
-        { src: 'src/preview/preview.html', dest: 'preview.html' }
+        { src: 'src/preview/preview.html', dest: 'preview.html' },
+        { src: 'src/error-report/error-report.html', dest: 'error-report.html' }
       ];
 
       for (const { src, dest } of htmlFiles) {
@@ -65,6 +66,7 @@ export default defineConfig({
         // Note: content-script is built separately with IIFE format
         offscreen: resolve(__dirname, 'src/offscreen/offscreen.html'),
         preview: resolve(__dirname, 'src/preview/preview.html'),
+        'error-report': resolve(__dirname, 'src/error-report/error-report.html'),
       },
       output: {
         entryFileNames: '[name].js',

@@ -13,33 +13,62 @@ import type {
 } from '../shared/messages';
 import { EXTENSION_VERSION } from '../shared/constants';
 import { CAPTURE_CONFIG } from '../shared/constants';
+import { startOperation, log, recordError } from '../shared/error-reporter';
 
 // Track offscreen document state
 let offscreenDocumentCreating: Promise<void> | null = null;
 
-// Send progress update to popup
+// Send progress update to popup (may fail if popup closed, that's ok)
 function sendProgress(stage: CaptureProgressMessage['stage'], message: string) {
-  chrome.runtime.sendMessage({
-    type: 'CAPTURE_PROGRESS',
-    stage,
-    message
-  } as CaptureProgressMessage);
+  try {
+    chrome.runtime.sendMessage({
+      type: 'CAPTURE_PROGRESS',
+      stage,
+      message
+    } as CaptureProgressMessage);
+  } catch {
+    // Popup probably closed, ignore
+  }
 }
 
-// Send completion to popup
+// Send completion to popup (may fail if popup closed, that's ok)
 function sendComplete(success: boolean) {
-  chrome.runtime.sendMessage({
-    type: 'CAPTURE_COMPLETE',
-    success
-  } as CaptureCompleteMessage);
+  try {
+    chrome.runtime.sendMessage({
+      type: 'CAPTURE_COMPLETE',
+      success
+    } as CaptureCompleteMessage);
+  } catch {
+    // Popup probably closed, ignore
+  }
 }
 
-// Send error to popup
-function sendError(error: string) {
-  chrome.runtime.sendMessage({
-    type: 'CAPTURE_ERROR',
-    error
-  } as CaptureErrorMessage);
+// Send error to popup and open error report page
+async function sendError(error: string, openErrorPage = true) {
+  console.log('sendError called:', error, 'openErrorPage:', openErrorPage);
+
+  // Send to popup (may fail if popup is closed, that's ok)
+  try {
+    chrome.runtime.sendMessage({
+      type: 'CAPTURE_ERROR',
+      error
+    } as CaptureErrorMessage);
+  } catch (e) {
+    console.log('Could not send to popup (probably closed):', e);
+  }
+
+  // Open error report page for easy copying
+  if (openErrorPage) {
+    console.log('Opening error report page...');
+    try {
+      const errorPageUrl = chrome.runtime.getURL('error-report.html');
+      console.log('Error page URL:', errorPageUrl);
+      await chrome.tabs.create({ url: errorPageUrl, active: true });
+      console.log('Error report page opened');
+    } catch (e) {
+      console.error('Failed to open error report page:', e);
+    }
+  }
 }
 
 // Capture visible tab screenshot
@@ -139,12 +168,32 @@ async function handleCaptureRequest(options: CaptureOptions) {
     const url = tab.url;
     const pageTitle = tab.title || url;
 
-    // Step 1: Inject content script first (needed for full-page capture)
-    console.time('injectScript');
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content-script.js']
+    // Start operation logging
+    startOperation(`${options.captureType} capture`, url, {
+      captureType: options.captureType,
+      strategy: options.strategy,
+      pageTitle
     });
+    log('Capture request started');
+
+    // Check for browser internal pages that can't be captured
+    const browserPagePrefixes = ['chrome://', 'chrome-extension://', 'brave://', 'edge://', 'about:', 'devtools://'];
+    if (browserPagePrefixes.some(prefix => url.startsWith(prefix))) {
+      throw new Error(`Cannot capture browser pages (${url.split('/')[0]}//). Please navigate to a regular webpage.`);
+    }
+
+    // Step 1: Inject content script first (needed for full-page capture)
+    log('Injecting content script');
+    console.time('injectScript');
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['content-script.js']
+      });
+    } catch (injectErr) {
+      log(`Script injection failed: ${injectErr}`);
+      throw new Error(`Cannot capture this page. It may be restricted or require special permissions.`);
+    }
     console.timeEnd('injectScript');
 
     // Minimal delay to let content script initialize its listener
@@ -245,7 +294,30 @@ async function handleCaptureRequest(options: CaptureOptions) {
 
   } catch (err) {
     console.error('Capture failed:', err);
-    sendError(err instanceof Error ? err.message : 'Unknown error occurred');
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+    console.log('Recording error and opening error page for:', errorMessage);
+
+    // Open error page FIRST, before anything else can fail
+    try {
+      const errorPageUrl = chrome.runtime.getURL('error-report.html');
+      console.log('Opening error page:', errorPageUrl);
+      await chrome.tabs.create({ url: errorPageUrl, active: true });
+    } catch (openErr) {
+      console.error('Failed to open error page:', openErr);
+    }
+
+    // Then record and notify
+    try {
+      await recordError(err instanceof Error ? err : new Error(String(err)));
+    } catch (recordErr) {
+      console.error('Failed to record error:', recordErr);
+    }
+
+    try {
+      await sendError(errorMessage, false); // false = don't open page again
+    } catch (sendErr) {
+      console.error('Failed to send error:', sendErr);
+    }
   }
 }
 

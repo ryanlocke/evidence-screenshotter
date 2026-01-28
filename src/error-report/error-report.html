@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Evidence Screenshotter - Error Report</title>
+  <link rel="stylesheet" href="error-report.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="header-icon">⚠️</div>
+      <h1>Capture Failed</h1>
+      <p class="subtitle">Something went wrong. Please send this report to Ryan for debugging.</p>
+    </header>
+
+    <main>
+      <section class="error-summary">
+        <h2>Error</h2>
+        <div class="error-message" id="errorMessage">Loading...</div>
+      </section>
+
+      <section class="report-section">
+        <h2>Full Report</h2>
+        <p class="hint">Copy and paste this into Slack or email:</p>
+        <textarea id="reportText" readonly></textarea>
+
+        <div class="actions">
+          <button id="copyBtn" class="btn btn-primary">
+            <span class="btn-icon">📋</span>
+            Copy to Clipboard
+          </button>
+          <button id="retryBtn" class="btn btn-secondary">
+            <span class="btn-icon">🔄</span>
+            Try Again
+          </button>
+        </div>
+      </section>
+
+      <section class="help-section">
+        <h2>Common Fixes</h2>
+        <ul>
+          <li><strong>Rate limit errors:</strong> Wait a few seconds and try again</li>
+          <li><strong>Page too long:</strong> Try "Visible Area" instead of "Full Page"</li>
+          <li><strong>Permission errors:</strong> Reload the page and try again</li>
+          <li><strong>Browser pages:</strong> Can't capture chrome:// or extension pages</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer>
+      <button id="closeBtn" class="btn btn-text">Close this tab</button>
+    </footer>
+  </div>
+
+  <div id="toast" class="toast hidden">Copied to clipboard!</div>
+
+  <script type="module" src="error-report.ts"></script>
+</body>
+</html>
