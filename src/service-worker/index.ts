@@ -64,13 +64,14 @@ async function getImageDimensions(tabId: number, dataUrl: string, captureType: '
     return { width: dims.width, height: dims.height };
   }
 
-  // For full-page stitched images, decode once to get real dimensions
-  return new Promise<{ width: number; height: number }>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve({ width: img.width, height: img.height });
-    img.onerror = () => reject(new Error('Failed to read stitched image dimensions'));
-    img.src = dataUrl;
-  });
+  // For full-page stitched images, use createImageBitmap (works in service workers)
+  // Convert data URL to blob first
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  const bitmap = await createImageBitmap(blob);
+  const dimensions = { width: bitmap.width, height: bitmap.height };
+  bitmap.close(); // Free memory
+  return dimensions;
 }
 
 // Helper to wait
@@ -218,15 +219,26 @@ async function handleCaptureRequest(options: CaptureOptions) {
 
     // Store captured data for preview page to read
     console.time('storageSet');
-    await chrome.storage.local.set({ [CAPTURE_STORAGE_KEY]: evidenceData });
-    console.timeEnd('storageSet');
+    console.log('Screenshot data size:', evidenceData.screenshot.dataUrl.length, 'chars');
+    try {
+      await chrome.storage.local.set({ [CAPTURE_STORAGE_KEY]: evidenceData });
+      console.timeEnd('storageSet');
+    } catch (storageErr) {
+      console.error('Storage failed:', storageErr);
+      throw new Error(`Failed to save capture data: ${storageErr}`);
+    }
 
     // Open preview page in new tab
     console.time('openPreview');
-    await chrome.tabs.create({
-      url: chrome.runtime.getURL('preview.html')
-    });
-    console.timeEnd('openPreview');
+    try {
+      const previewUrl = chrome.runtime.getURL('preview.html');
+      console.log('Opening preview URL:', previewUrl);
+      await chrome.tabs.create({ url: previewUrl });
+      console.timeEnd('openPreview');
+    } catch (tabErr) {
+      console.error('Failed to open preview tab:', tabErr);
+      throw new Error(`Failed to open preview: ${tabErr}`);
+    }
 
     console.log('Total capture time:', performance.now() - startTime, 'ms');
     sendComplete(true);
@@ -254,10 +266,18 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage & { type: string
     case 'CAPTURE_VIEWPORT':
       // Handle viewport capture request from content script (for full-page stitching)
       if (sender.tab?.id) {
-        captureViewport(sender.tab.id).then(sendResponse);
+        captureViewport(sender.tab.id)
+          .then(dataUrl => sendResponse(dataUrl))
+          .catch(err => {
+            console.error('CAPTURE_VIEWPORT failed:', err);
+            sendResponse({ error: err.message || 'Capture failed' });
+          });
         return true; // Keep channel open for async response
+      } else {
+        console.error('CAPTURE_VIEWPORT: No tab ID available');
+        sendResponse({ error: 'No tab ID available' });
+        return false;
       }
-      break;
   }
 
   return false;

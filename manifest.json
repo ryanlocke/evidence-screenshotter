@@ -6,8 +6,10 @@
 
   "permissions": [
     "activeTab",
+    "tabs",
     "scripting",
     "storage",
+    "unlimitedStorage",
     "downloads",
     "offscreen"
   ],

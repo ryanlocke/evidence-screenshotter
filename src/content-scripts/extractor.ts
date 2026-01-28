@@ -201,11 +201,18 @@ async function captureFullPage(): Promise<string> {
       chrome.runtime.sendMessage({ type: 'CAPTURE_VIEWPORT' }, (response) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
-        } else {
+        } else if (response?.error) {
+          reject(new Error(response.error));
+        } else if (typeof response === 'string') {
           resolve(response);
+        } else {
+          reject(new Error('Invalid response from service worker'));
         }
       });
     });
+
+    // Update timestamp for next iteration's rate limit calculation
+    lastCaptureTime = performance.now();
 
     // Draw on canvas - captureVisibleTab returns image at device pixel ratio
     await new Promise<void>((resolve) => {
