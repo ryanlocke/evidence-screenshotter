@@ -38,7 +38,7 @@ The preview page opens automatically where you can edit and download your PDF.
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/evidence-screenshotter.git
+   git clone https://github.com/ryanlocke/evidence-screenshotter.git
    cd evidence-screenshotter
    ```
 
