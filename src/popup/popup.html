@@ -44,6 +44,31 @@
         <p id="errorText"></p>
       </div>
     </main>
+
+    <footer class="footer">
+      <button id="reportBtn" class="report-btn">
+        <span id="errorBadge" class="error-badge hidden">0</span>
+        Report Issue
+      </button>
+    </footer>
+  </div>
+
+  <!-- Report Modal -->
+  <div id="reportModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Error Report</h2>
+        <button id="closeReportBtn" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">Copy this report and send it to Ryan for debugging:</p>
+        <textarea id="reportText" readonly rows="12"></textarea>
+        <div class="modal-actions">
+          <button id="copyReportBtn" class="btn btn-primary">Copy to Clipboard</button>
+          <button id="clearErrorsBtn" class="btn btn-secondary">Clear Error Log</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="popup.ts"></script>

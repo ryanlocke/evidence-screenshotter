@@ -4,6 +4,7 @@ import type { ExtractedContent, PageType, ExtractionStrategy } from '../shared/t
 import type { ExtractContentMessage, ExtractionCompleteMessage } from '../shared/messages';
 import { SOCIAL_MEDIA_DOMAINS, FORUM_INDICATORS, CAPTURE_CONFIG } from '../shared/constants';
 import type { DimensionsResponseMessage, GetDimensionsMessage } from '../shared/messages';
+import { startOperation, log, recordError } from '../shared/error-reporter';
 
 // Detect page type based on URL and DOM structure
 function detectPageType(url: string, doc: Document): PageType {
@@ -158,6 +159,54 @@ function extractContent(strategy: ExtractionStrategy): ExtractedContent {
   return readabilityResult;
 }
 
+// Request a single viewport capture from service worker
+async function requestViewportCapture(): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'CAPTURE_VIEWPORT' }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+      } else if (response?.error) {
+        reject(new Error(response.error));
+      } else if (typeof response === 'string') {
+        resolve(response);
+      } else {
+        reject(new Error('Invalid response from service worker'));
+      }
+    });
+  });
+}
+
+// Capture viewport with retry and exponential backoff for rate limit errors
+async function captureViewportWithRetry(
+  currentDelay: number,
+  maxRetries = 3
+): Promise<{ dataUrl: string; nextDelay: number }> {
+  let delay = currentDelay;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const dataUrl = await requestViewportCapture();
+      // Success - can slightly decrease delay for next capture (but not below minimum)
+      const nextDelay = Math.max(CAPTURE_CONFIG.rateLimitMs, delay * 0.95);
+      return { dataUrl, nextDelay };
+    } catch (err) {
+      const isRateLimited = err instanceof Error &&
+        err.message.includes('MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND');
+
+      if (isRateLimited && attempt < maxRetries - 1) {
+        // Exponential backoff: increase delay by 50%
+        delay = Math.min(delay * 1.5, 2000); // Cap at 2 seconds
+        log(`Rate limited, retrying in ${delay}ms (attempt ${attempt + 2}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error('Max retries exceeded for viewport capture');
+}
+
 // Full-page screenshot via scroll-stitching
 async function captureFullPage(): Promise<string> {
   const viewportHeight = window.innerHeight;
@@ -172,6 +221,18 @@ async function captureFullPage(): Promise<string> {
   const maxHeight = Math.min(totalHeight, CAPTURE_CONFIG.maxPageHeight);
   const numCaptures = Math.ceil(maxHeight / viewportHeight);
 
+  // Start operation logging
+  startOperation('Full-page capture', location.href, {
+    viewportHeight,
+    viewportWidth,
+    totalHeight,
+    maxHeight,
+    numCaptures,
+    dpr
+  });
+
+  log(`Page dimensions: ${viewportWidth}x${totalHeight}, capturing ${numCaptures} sections`);
+
   // Store original scroll position
   const originalScrollY = window.scrollY;
 
@@ -181,37 +242,26 @@ async function captureFullPage(): Promise<string> {
   canvas.height = maxHeight * dpr;
   const ctx = canvas.getContext('2d')!;
 
-  // Capture each viewport
+  // Adaptive delay - starts at configured rate limit, adjusts based on success/failure
+  let adaptiveDelay = CAPTURE_CONFIG.rateLimitMs;
   let lastCaptureTime = performance.now();
+
   for (let i = 0; i < numCaptures; i++) {
     const scrollY = i * viewportHeight;
 
     // Scroll to position
     window.scrollTo(0, scrollY);
+    log(`Capturing section ${i + 1}/${numCaptures}`);
 
-    // Wait minimally for scroll settle and respect Chrome capture rate limits
-    // Respect Chrome capture rate (~2/s). If min delay is lower, wait the remainder.
+    // Wait for rate limit
     const now = performance.now();
     const elapsed = now - lastCaptureTime;
-    const wait = Math.max(CAPTURE_CONFIG.minCaptureDelay, CAPTURE_CONFIG.rateLimitMs - elapsed);
+    const wait = Math.max(CAPTURE_CONFIG.minCaptureDelay, adaptiveDelay - elapsed);
     await new Promise(r => setTimeout(r, Math.max(wait, 0)));
 
-    // Request viewport capture from service worker
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      chrome.runtime.sendMessage({ type: 'CAPTURE_VIEWPORT' }, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else if (response?.error) {
-          reject(new Error(response.error));
-        } else if (typeof response === 'string') {
-          resolve(response);
-        } else {
-          reject(new Error('Invalid response from service worker'));
-        }
-      });
-    });
-
-    // Update timestamp for next iteration's rate limit calculation
+    // Capture with retry logic
+    const { dataUrl, nextDelay } = await captureViewportWithRetry(adaptiveDelay);
+    adaptiveDelay = nextDelay;
     lastCaptureTime = performance.now();
 
     // Draw on canvas - captureVisibleTab returns image at device pixel ratio
@@ -280,9 +330,11 @@ chrome.runtime.onMessage.addListener((message: ExtractContentMessage & { type: s
   if (message.type === 'CAPTURE_FULL_PAGE') {
     console.log('Content script: capturing full page');
     captureFullPage().then(dataUrl => {
+      log('Full page capture completed successfully');
       sendResponse({ type: 'FULL_PAGE_CAPTURED', dataUrl });
-    }).catch(err => {
+    }).catch(async (err) => {
       console.error('Full page capture failed:', err);
+      await recordError(err instanceof Error ? err : new Error(String(err)));
       sendResponse({ type: 'FULL_PAGE_ERROR', error: String(err) });
     });
     return true; // Keep channel open for async response

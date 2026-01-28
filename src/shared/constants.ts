@@ -42,6 +42,6 @@ export const CAPTURE_CONFIG = {
   scrollDelay: 150,        // ms to wait after each scroll
   // Generous default to avoid silent truncation on long pages; adjust if memory is constrained
   maxPageHeight: 120000,   // max pixels for full-page capture
-  minCaptureDelay: 50,     // ms floor between captures
-  rateLimitMs: 550         // Chrome captureVisibleTab practical minimum interval
+  minCaptureDelay: 100,    // ms floor between captures
+  rateLimitMs: 650         // Chrome captureVisibleTab limit ~2/s, use 650ms for safety
 };

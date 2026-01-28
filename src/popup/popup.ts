@@ -1,5 +1,6 @@
 import type { CaptureOptions } from '../shared/types';
 import type { CaptureRequestMessage, CaptureProgressMessage, CaptureCompleteMessage, CaptureErrorMessage } from '../shared/messages';
+import { getErrorSummary, generateErrorReport, clearErrorLog } from '../shared/error-reporter';
 
 // DOM elements
 const captureBtn = document.getElementById('captureBtn') as HTMLButtonElement;
@@ -8,6 +9,15 @@ const progressDiv = document.getElementById('progress') as HTMLDivElement;
 const progressText = document.getElementById('progressText') as HTMLParagraphElement;
 const errorDiv = document.getElementById('error') as HTMLDivElement;
 const errorText = document.getElementById('errorText') as HTMLParagraphElement;
+
+// Report modal elements
+const reportBtn = document.getElementById('reportBtn') as HTMLButtonElement;
+const errorBadge = document.getElementById('errorBadge') as HTMLSpanElement;
+const reportModal = document.getElementById('reportModal') as HTMLDivElement;
+const closeReportBtn = document.getElementById('closeReportBtn') as HTMLButtonElement;
+const reportText = document.getElementById('reportText') as HTMLTextAreaElement;
+const copyReportBtn = document.getElementById('copyReportBtn') as HTMLButtonElement;
+const clearErrorsBtn = document.getElementById('clearErrorsBtn') as HTMLButtonElement;
 
 // Get selected options
 function getOptions(): CaptureOptions {
@@ -80,3 +90,73 @@ chrome.runtime.onMessage.addListener((message: CaptureProgressMessage | CaptureC
 setTimeout(() => {
   chrome.runtime.sendMessage({ type: 'PING' }).catch(() => {});
 }, 0);
+
+// Update error badge count
+async function updateErrorBadge() {
+  const summary = await getErrorSummary();
+  if (summary.count > 0) {
+    errorBadge.textContent = summary.count.toString();
+    errorBadge.classList.remove('hidden');
+  } else {
+    errorBadge.classList.add('hidden');
+  }
+}
+
+// Show report modal
+async function showReportModal() {
+  const report = await generateErrorReport();
+  reportText.value = report;
+  reportModal.classList.remove('hidden');
+}
+
+// Hide report modal
+function hideReportModal() {
+  reportModal.classList.add('hidden');
+}
+
+// Copy report to clipboard
+async function copyReport() {
+  try {
+    await navigator.clipboard.writeText(reportText.value);
+    copyReportBtn.textContent = 'Copied!';
+    setTimeout(() => {
+      copyReportBtn.textContent = 'Copy to Clipboard';
+    }, 2000);
+  } catch {
+    // Fallback for older browsers
+    reportText.select();
+    document.execCommand('copy');
+    copyReportBtn.textContent = 'Copied!';
+    setTimeout(() => {
+      copyReportBtn.textContent = 'Copy to Clipboard';
+    }, 2000);
+  }
+}
+
+// Clear error log
+async function clearErrors() {
+  await clearErrorLog();
+  await updateErrorBadge();
+  const report = await generateErrorReport();
+  reportText.value = report;
+  clearErrorsBtn.textContent = 'Cleared!';
+  setTimeout(() => {
+    clearErrorsBtn.textContent = 'Clear Error Log';
+  }, 2000);
+}
+
+// Event listeners for report modal
+reportBtn.addEventListener('click', showReportModal);
+closeReportBtn.addEventListener('click', hideReportModal);
+copyReportBtn.addEventListener('click', copyReport);
+clearErrorsBtn.addEventListener('click', clearErrors);
+
+// Close modal on background click
+reportModal.addEventListener('click', (e) => {
+  if (e.target === reportModal) {
+    hideReportModal();
+  }
+});
+
+// Initialize error badge
+updateErrorBadge();
