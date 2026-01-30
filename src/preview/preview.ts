@@ -165,31 +165,44 @@ function makeElementsRemovable() {
   const removableElements = extractedContent.querySelectorAll('p, img, blockquote, h2, h3, h4, ul, ol, figure');
 
   removableElements.forEach((el) => {
-    el.classList.add('removable');
+    let targetElement = el as HTMLElement;
 
-    // Create delete button (instead of CSS pseudo-element)
+    // Void elements (img, br, hr, input) can't have children appended
+    // Wrap them in a container div for the delete button
+    if (el.tagName === 'IMG') {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'img-wrapper removable';
+      wrapper.style.position = 'relative';
+      wrapper.style.display = 'inline-block';
+      el.parentNode?.insertBefore(wrapper, el);
+      wrapper.appendChild(el);
+      targetElement = wrapper;
+    } else {
+      el.classList.add('removable');
+      targetElement.style.position = 'relative';
+    }
+
+    // Create delete button
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'remove-btn';
     deleteBtn.innerHTML = '×';
     deleteBtn.title = 'Remove this element';
-    (el as HTMLElement).style.position = 'relative';
-    el.appendChild(deleteBtn);
+    targetElement.appendChild(deleteBtn);
 
     // Only delete when clicking the button
     deleteBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
 
-      const element = el as HTMLElement;
-      const parent = element.parentElement!;
-      const nextSibling = element.nextSibling;
+      const parent = targetElement.parentElement!;
+      const nextSibling = targetElement.nextSibling;
 
       // Store for undo
-      undoStack.push({ type: 'element', data: { element, parent, nextSibling } });
+      undoStack.push({ type: 'element', data: { element: targetElement, parent, nextSibling } });
       undoBtn.disabled = false;
 
-      // Remove element
-      element.classList.add('removed');
+      // Remove element (wrapper or element itself)
+      targetElement.classList.add('removed');
     });
   });
 }
