@@ -436,6 +436,58 @@ function escapeHtml(text: string): string {
   return div.innerHTML;
 }
 
+// Add invisible text layer to PDF for searchability
+function addSearchableTextLayer(pdf: any, data: EvidenceData) {
+  const margin = PDF_CONFIG.margin;
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const textWidth = pageWidth - margin * 2;
+
+  // Add metadata as searchable text on page 1
+  pdf.setPage(1);
+  pdf.setFontSize(8);
+
+  // URL and title (searchable but invisible)
+  const metaText = `${data.metadata.url}\n${data.metadata.pageTitle}`;
+  pdf.text(metaText, margin, margin + 5, {
+    maxWidth: textWidth,
+    renderingMode: 'invisible'
+  });
+
+  // Add extracted content as searchable text
+  if (includeContent.checked && data.extractedContent.textContent) {
+    const textContent = data.extractedContent.textContent;
+    const lines = pdf.splitTextToSize(textContent, textWidth);
+
+    // Use jsPDF-aware line height instead of a magic number
+    const lineHeight = typeof pdf.getLineHeight === 'function'
+      ? pdf.getLineHeight()
+      : pdf.getFontSize() * (pdf.getLineHeightFactor?.() || 1.15);
+
+    const textTop = margin + 10; // leave space below metadata
+    const usableHeight = pageHeight - margin - textTop;
+    const linesPerPage = Math.max(1, Math.floor(usableHeight / lineHeight));
+
+    let currentLine = 0;
+    let page = 1;
+    while (currentLine < lines.length) {
+      // Ensure the page exists (html2pdf may only create as many as rendered content)
+      if (page > pdf.internal.getNumberOfPages()) {
+        pdf.addPage();
+      }
+
+      pdf.setPage(page);
+      const pageLines = lines.slice(currentLine, currentLine + linesPerPage);
+      pdf.text(pageLines, margin, textTop, {
+        renderingMode: 'invisible'
+      });
+
+      currentLine += linesPerPage;
+      page += 1;
+    }
+  }
+}
+
 // Generate and save PDF
 async function generatePDF() {
   if (!currentData) return;
@@ -481,7 +533,18 @@ async function generatePDF() {
       pagebreak: { mode: ['css', 'legacy'] }
     };
 
-    await html2pdf().set(options).from(container).save();
+    // Generate PDF and add invisible text layer for searchability
+    const capturedData = currentData;
+    await html2pdf()
+      .set(options)
+      .from(container)
+      .toPdf()
+      .get('pdf')
+      .then((pdf: any) => {
+        addSearchableTextLayer(pdf, capturedData);
+        return pdf;
+      })
+      .save();
 
     // Restore removed elements visibility (still hidden via .removed class)
     removedEls.forEach(el => (el as HTMLElement).style.display = '');
