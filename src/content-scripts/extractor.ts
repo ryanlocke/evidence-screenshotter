@@ -68,9 +68,35 @@ function extractWithReadability(doc: Document): ExtractedContent | null {
       ALLOWED_ATTR: ['href', 'src', 'alt', 'title']
     });
 
-    // Extract images
+    // Post-process: remove decorative profile images that won't render properly
     const tempDiv = document.createElement('div');
     tempDiv.innerHTML = sanitizedContent;
+
+    // Remove images with alt text indicating they're profile/decorative images
+    tempDiv.querySelectorAll('img').forEach(img => {
+      const alt = (img.alt || '').toLowerCase();
+      const decorativeKeywords = [
+        'profile image',
+        'profile photo',
+        'profile picture',
+        'user avatar',
+        'avatar',
+        'headshot',
+        'mugshot',
+        'thumbnail'
+      ];
+
+      const isDecorativeAlt = decorativeKeywords.some(keyword => alt.includes(keyword));
+      const isBracketedPlaceholder = /^\[.*image.*\]$/i.test(img.alt || '');
+
+      if (isDecorativeAlt || isBracketedPlaceholder) {
+        img.remove();
+      }
+    });
+
+    const cleanedContent = tempDiv.innerHTML;
+
+    // Extract remaining images
     const images = Array.from(tempDiv.querySelectorAll('img')).map(img => ({
       src: img.src,
       alt: img.alt || '',
@@ -79,7 +105,7 @@ function extractWithReadability(doc: Document): ExtractedContent | null {
 
     return {
       title: article.title,
-      content: sanitizedContent,
+      content: cleanedContent,
       textContent: article.textContent || '',
       byline: article.byline || undefined,
       publishedTime: article.publishedTime || undefined,
