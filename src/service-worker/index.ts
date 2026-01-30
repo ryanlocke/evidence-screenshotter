@@ -44,7 +44,7 @@ function sendComplete(success: boolean) {
 }
 
 // Send error to popup and open error report page
-async function sendError(error: string, openErrorPage = true) {
+async function sendError(error: string, openErrorPage = true, sourceTabIndex?: number) {
   console.log('sendError called:', error, 'openErrorPage:', openErrorPage);
 
   // Send to popup (may fail if popup is closed, that's ok)
@@ -63,7 +63,11 @@ async function sendError(error: string, openErrorPage = true) {
     try {
       const errorPageUrl = chrome.runtime.getURL('error-report.html');
       console.log('Error page URL:', errorPageUrl);
-      await chrome.tabs.create({ url: errorPageUrl, active: true });
+      const createOptions: chrome.tabs.CreateProperties = { url: errorPageUrl, active: true };
+      if (sourceTabIndex !== undefined) {
+        createOptions.index = sourceTabIndex + 1;
+      }
+      await chrome.tabs.create(createOptions);
       console.log('Error report page opened');
     } catch (e) {
       console.error('Failed to open error report page:', e);
@@ -157,6 +161,7 @@ const CAPTURE_STORAGE_KEY = 'evidence_capture_data';
 // Main capture flow - now opens preview page instead of generating PDF directly
 async function handleCaptureRequest(options: CaptureOptions) {
   const startTime = performance.now();
+  let sourceTabIndex: number | undefined;
   try {
     // Get active tab
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -167,6 +172,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
     const tabId = tab.id;
     const url = tab.url;
     const pageTitle = tab.title || url;
+    sourceTabIndex = tab.index;
 
     // Start operation logging
     startOperation(`${options.captureType} capture`, url, {
@@ -277,12 +283,12 @@ async function handleCaptureRequest(options: CaptureOptions) {
       throw new Error(`Failed to save capture data: ${storageErr}`);
     }
 
-    // Open preview page in new tab
+    // Open preview page in new tab (to the right of source tab)
     console.time('openPreview');
     try {
       const previewUrl = chrome.runtime.getURL('preview.html');
       console.log('Opening preview URL:', previewUrl);
-      await chrome.tabs.create({ url: previewUrl });
+      await chrome.tabs.create({ url: previewUrl, index: sourceTabIndex + 1 });
       console.timeEnd('openPreview');
     } catch (tabErr) {
       console.error('Failed to open preview tab:', tabErr);
@@ -297,11 +303,16 @@ async function handleCaptureRequest(options: CaptureOptions) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
     console.log('Recording error and opening error page for:', errorMessage);
 
-    // Open error page FIRST, before anything else can fail
+    // Open error page FIRST, before anything else can fail (to the right of source tab if known)
     try {
       const errorPageUrl = chrome.runtime.getURL('error-report.html');
       console.log('Opening error page:', errorPageUrl);
-      await chrome.tabs.create({ url: errorPageUrl, active: true });
+      // sourceTabIndex may not be defined if error occurred before we got the tab
+      const createOptions: chrome.tabs.CreateProperties = { url: errorPageUrl, active: true };
+      if (typeof sourceTabIndex === 'number') {
+        createOptions.index = sourceTabIndex + 1;
+      }
+      await chrome.tabs.create(createOptions);
     } catch (openErr) {
       console.error('Failed to open error page:', openErr);
     }
