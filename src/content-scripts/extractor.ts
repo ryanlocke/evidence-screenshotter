@@ -212,8 +212,11 @@ async function captureViewportWithRetry(
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       const dataUrl = await requestViewportCapture();
-      // Success - keep current delay (don't reduce after rate-limit recovery)
-      return { dataUrl, nextDelay: delay };
+      // Success - cautiously decay delay toward the base rate limit after backoff
+      const reducedDelay = delay > CAPTURE_CONFIG.rateLimitMs
+        ? Math.max(CAPTURE_CONFIG.rateLimitMs, delay * 0.9)
+        : delay;
+      return { dataUrl, nextDelay: reducedDelay };
     } catch (err) {
       const isRateLimited = err instanceof Error &&
         err.message.includes('MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND');
