@@ -205,16 +205,18 @@ async function requestViewportCapture(): Promise<string> {
 // Capture viewport with retry and exponential backoff for rate limit errors
 async function captureViewportWithRetry(
   currentDelay: number,
-  maxRetries = 3
+  maxRetries = 5
 ): Promise<{ dataUrl: string; nextDelay: number }> {
   let delay = currentDelay;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       const dataUrl = await requestViewportCapture();
-      // Success - can slightly decrease delay for next capture (but not below minimum)
-      const nextDelay = Math.max(CAPTURE_CONFIG.rateLimitMs, delay * 0.95);
-      return { dataUrl, nextDelay };
+      // Success - cautiously decay delay toward the base rate limit after backoff
+      const reducedDelay = delay > CAPTURE_CONFIG.rateLimitMs
+        ? Math.max(CAPTURE_CONFIG.rateLimitMs, delay * 0.9)
+        : delay;
+      return { dataUrl, nextDelay: reducedDelay };
     } catch (err) {
       const isRateLimited = err instanceof Error &&
         err.message.includes('MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND');
@@ -275,8 +277,9 @@ async function captureFullPage(): Promise<string> {
   for (let i = 0; i < numCaptures; i++) {
     const scrollY = i * viewportHeight;
 
-    // Scroll to position
+    // Scroll to position and wait for content to settle
     window.scrollTo(0, scrollY);
+    await new Promise(r => setTimeout(r, CAPTURE_CONFIG.scrollDelay));
     log(`Capturing section ${i + 1}/${numCaptures}`);
 
     // Wait for rate limit
