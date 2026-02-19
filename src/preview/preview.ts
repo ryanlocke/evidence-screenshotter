@@ -834,12 +834,12 @@ function setTool(tool: AnnotationTool) {
   }
 }
 
-// Get mouse coordinates relative to preview area
+// Get mouse coordinates relative to annotation overlay
 function getRelativeCoords(e: MouseEvent): { x: number; y: number } {
-  const rect = previewArea.getBoundingClientRect();
+  const rect = annotationOverlay.getBoundingClientRect();
   return {
-    x: e.clientX - rect.left + previewArea.scrollLeft,
-    y: e.clientY - rect.top + previewArea.scrollTop
+    x: e.clientX - rect.left,
+    y: e.clientY - rect.top
   };
 }
 
