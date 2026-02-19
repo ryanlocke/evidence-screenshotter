@@ -27,6 +27,9 @@ let isDrawing = false;
 let drawStart: { x: number; y: number } | null = null;
 const annotations: SVGElement[] = [];
 
+// Track whether AI enhance triggered the settings modal
+let pendingAIEnhance = false;
+
 // DOM Elements
 const loadingState = document.getElementById('loadingState')!;
 const previewContent = document.getElementById('previewContent')!;
@@ -579,6 +582,7 @@ async function enhanceWithAI() {
   const settings = await loadSettings();
 
   if (!settings.apiKey) {
+    pendingAIEnhance = true;
     showStatus('Please add your API key in Settings', 'error');
     settingsModal.classList.remove('hidden');
     return;
@@ -594,7 +598,7 @@ async function enhanceWithAI() {
     const textContent = currentData.extractedContent.textContent;
 
     const payload = {
-      model: 'claude-3-haiku-20240307',
+      model: 'claude-sonnet-4-6',
       max_tokens: 4096,
       messages: [{
         role: 'user',
@@ -623,7 +627,14 @@ Return ONLY the HTML content, no explanations.`
     });
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+      const status = response.status;
+      if (status === 401) {
+        throw new Error('Invalid API key. Check your key in Settings.');
+      } else if (status === 429) {
+        throw new Error('Rate limited — try again in a moment.');
+      } else {
+        throw new Error(`API error (HTTP ${status})`);
+      }
     }
 
     const result = await response.json();
@@ -637,7 +648,8 @@ Return ONLY the HTML content, no explanations.`
     showStatus('Content enhanced with AI!', 'success');
   } catch (err) {
     console.error('AI enhancement failed:', err);
-    showStatus('AI enhancement failed. Check your API key.', 'error');
+    const message = err instanceof Error ? err.message : 'AI enhancement failed';
+    showStatus(message, 'error');
   } finally {
     aiEnhanceBtn.disabled = false;
     aiEnhanceBtn.innerHTML = '<span class="btn-icon">✨</span> Enhance with AI';
@@ -1045,11 +1057,13 @@ function init() {
 
   closeSettingsBtn.addEventListener('click', () => {
     settingsModal.classList.add('hidden');
+    pendingAIEnhance = false;
   });
 
   settingsModal.addEventListener('click', (e) => {
     if (e.target === settingsModal) {
       settingsModal.classList.add('hidden');
+      pendingAIEnhance = false;
     }
   });
 
@@ -1065,6 +1079,13 @@ function init() {
 
     settingsModal.classList.add('hidden');
     showStatus('Settings saved!', 'success');
+
+    // Auto-trigger AI enhancement if user was prompted for key
+    if (pendingAIEnhance && apiKey) {
+      pendingAIEnhance = false;
+      enhanceWithAI();
+    }
+    pendingAIEnhance = false;
   });
 
   // Load settings async (non-blocking)
