@@ -162,18 +162,25 @@ async function saveSettings(settings: { apiKey?: string }): Promise<void> {
 
 // Make elements removable
 function makeElementsRemovable() {
-  const removableElements = extractedContent.querySelectorAll('p, img, blockquote, h2, h3, h4, ul, ol, figure');
+  const removableElements = extractedContent.querySelectorAll('p, img, blockquote, h2, h3, h4, ul, ol, figure, table');
 
   removableElements.forEach((el) => {
     let targetElement = el as HTMLElement;
 
-    // Void elements (img, br, hr, input) can't have children appended
-    // Wrap them in a container div for the delete button
+    // Wrap elements that cannot/shouldn't contain a button directly.
     if (el.tagName === 'IMG') {
       const wrapper = document.createElement('div');
       wrapper.className = 'img-wrapper removable';
       wrapper.style.position = 'relative';
       wrapper.style.display = 'inline-block';
+      el.parentNode?.insertBefore(wrapper, el);
+      wrapper.appendChild(el);
+      targetElement = wrapper;
+    } else if (el.tagName === 'TABLE') {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'table-wrapper removable';
+      wrapper.style.position = 'relative';
+      wrapper.style.display = 'block';
       el.parentNode?.insertBefore(wrapper, el);
       wrapper.appendChild(el);
       targetElement = wrapper;
