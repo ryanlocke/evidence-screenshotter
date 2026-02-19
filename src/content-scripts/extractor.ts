@@ -5,6 +5,7 @@ import type { ExtractContentMessage, ExtractionCompleteMessage } from '../shared
 import { SOCIAL_MEDIA_DOMAINS, FORUM_INDICATORS, CAPTURE_CONFIG } from '../shared/constants';
 import type { DimensionsResponseMessage, GetDimensionsMessage } from '../shared/messages';
 import { startOperation, log, recordError } from '../shared/error-reporter';
+import { collapseFragmentedParagraphs } from './paragraph-utils';
 
 // Detect page type based on URL and DOM structure
 function detectPageType(url: string, doc: Document): PageType {
@@ -62,37 +63,63 @@ function extractWithReadability(doc: Document): ExtractedContent | null {
       return null;
     }
 
-    // Sanitize content
-    const sanitizedContent = DOMPurify.sanitize(article.content, {
-      ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'a', 'strong', 'em', 'img', 'figure', 'figcaption', 'br', 'hr'],
-      ALLOWED_ATTR: ['href', 'src', 'alt', 'title']
-    });
-
-    // Post-process: remove decorative profile images that won't render properly
+    // Pre-sanitization: filter images while original attributes are still present
     const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = sanitizedContent;
+    tempDiv.innerHTML = article.content;
 
-    // Remove images with alt text indicating they're profile/decorative images
     tempDiv.querySelectorAll('img').forEach(img => {
       const alt = (img.alt || '').toLowerCase();
-      const decorativeKeywords = [
-        'profile image',
-        'profile photo',
-        'profile picture',
-        'user avatar',
-        'avatar',
-        'headshot',
-        'mugshot',
-        'thumbnail'
-      ];
+      const src = img.getAttribute('src') || '';
+      const width = parseInt(img.getAttribute('width') || '0', 10);
+      const height = parseInt(img.getAttribute('height') || '0', 10);
 
+      // Alt-text based decorative detection
+      const decorativeKeywords = [
+        'profile image', 'profile photo', 'profile picture',
+        'user avatar', 'avatar', 'headshot', 'mugshot', 'thumbnail'
+      ];
       const isDecorativeAlt = decorativeKeywords.some(keyword => alt.includes(keyword));
       const isBracketedPlaceholder = /^\[.*image.*\]$/i.test(img.alt || '');
 
-      if (isDecorativeAlt || isBracketedPlaceholder) {
+      // Missing/empty src
+      const isEmptySrc = !src || src === 'data:,';
+
+      // 1x1 tracking GIF signatures (keep non-pixel GIF data URIs)
+      const pixelGifSignatures = ['R0lGODlhAQAB', 'R0lGODdhAQAB'];
+      const isLikelyTrackingGif = src.startsWith('data:image/gif;base64,') &&
+        (pixelGifSignatures.some(sig => src.includes(sig)) || (width === 1 && height === 1));
+
+      // SVG data URIs (fail to render in html2pdf)
+      const isSvgDataUri = src.startsWith('data:image/svg');
+
+      // Small images with empty alt (icons/decorative)
+      const isSmallIcon = width > 0 && height > 0 && width <= 48 && height <= 48 && alt === '';
+
+      // Explicitly marked as decorative
+      const isAriaDecorative = img.getAttribute('aria-hidden') === 'true' ||
+        img.getAttribute('role') === 'presentation';
+
+      if (isDecorativeAlt || isBracketedPlaceholder || isEmptySrc || isLikelyTrackingGif ||
+          isSvgDataUri || isSmallIcon || isAriaDecorative) {
         img.remove();
       }
     });
+
+    // Sanitize content (with table support)
+    const sanitizedContent = DOMPurify.sanitize(tempDiv.innerHTML, {
+      ALLOWED_TAGS: [
+        'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li',
+        'blockquote', 'a', 'strong', 'em', 'img', 'figure', 'figcaption', 'br', 'hr',
+        'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption'
+      ],
+      ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'scope']
+    });
+
+    // Post-sanitization processing
+    tempDiv.innerHTML = sanitizedContent;
+
+    // Collapse fragmented paragraphs from Readability's div-to-p conversion
+    collapseFragmentedParagraphs(tempDiv);
 
     const cleanedContent = tempDiv.innerHTML;
 
@@ -139,8 +166,12 @@ function extractFallback(doc: Document): ExtractedContent {
   toRemove.forEach(el => el.remove());
 
   const sanitizedContent = DOMPurify.sanitize(tempDiv.innerHTML, {
-    ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'a', 'strong', 'em', 'img', 'figure', 'figcaption', 'br', 'hr', 'div', 'span'],
-    ALLOWED_ATTR: ['href', 'src', 'alt', 'title']
+    ALLOWED_TAGS: [
+      'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li',
+      'blockquote', 'a', 'strong', 'em', 'img', 'figure', 'figcaption', 'br', 'hr',
+      'div', 'span', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption'
+    ],
+    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'scope']
   });
 
   return {
