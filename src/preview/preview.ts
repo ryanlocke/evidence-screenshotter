@@ -1,8 +1,7 @@
 import type { EvidenceData } from '../shared/types';
 import { PDF_CONFIG } from '../shared/constants';
-
-// html2pdf is loaded lazily when user clicks save (it's 1.2MB!)
-let html2pdfModule: typeof import('html2pdf.js') | null = null;
+import { generatePdfDocument } from './pdf-generator';
+import { getVisibleScreenshotDataUrls } from './pdf-export-utils';
 
 // Storage keys
 const CAPTURE_STORAGE_KEY = 'evidence_capture_data';
@@ -373,9 +372,7 @@ function createScreenshotSection(dataUrl: string, index: number): HTMLElement {
       });
       undoBtn.disabled = false;
 
-      // Remove from array and DOM
-      const idx = screenshotSections.indexOf(sectionData);
-      if (idx > -1) screenshotSections.splice(idx, 1);
+      // Keep the section in memory and mark as removed so undo/export remain consistent
       wrapper.classList.add('removed');
 
       showStatus('Screenshot section removed (Ctrl+Z to undo)', 'info');
@@ -516,63 +513,37 @@ async function generatePDF() {
   if (!currentData) return;
 
   savePdfBtn.disabled = true;
-  savePdfBtn.textContent = 'Loading PDF library...';
+  savePdfBtn.textContent = 'Generating PDF...';
 
   try {
-    // Lazy load html2pdf.js (1.2MB) only when needed
-    if (!html2pdfModule) {
-      html2pdfModule = await import('html2pdf.js');
-    }
-    const html2pdf = html2pdfModule.default;
-
-    savePdfBtn.textContent = 'Generating PDF...';
-
-    // Get the preview container for PDF generation
-    // Export overlay + content together so annotations appear in the PDF
-    const container = previewExportContainer;
-
-    // Temporarily hide removed elements completely
-    const removedEls = container.querySelectorAll('.removed');
-    removedEls.forEach(el => (el as HTMLElement).style.display = 'none');
-
-    // Hide sections if not included
-    const originalScreenshotDisplay = screenshotSection.style.display;
-    const originalContentDisplay = contentSection.style.display;
+    // Collect visible (non-removed) screenshot data URLs
+    const visibleScreenshots = getVisibleScreenshotDataUrls(screenshotContainer);
 
     // Create safe filename from page title
     const safeTitle = currentData.metadata.pageTitle
-      .replace(/[^a-zA-Z0-9\s-]/g, '') // Remove special characters
+      .replace(/[^a-zA-Z0-9\s-]/g, '')
       .trim()
-      .replace(/\s+/g, '-') // Replace spaces with hyphens
-      .slice(0, 60) || 'evidence'; // Limit length, fallback if empty
+      .replace(/\s+/g, '-')
+      .slice(0, 60) || 'evidence';
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `${safeTitle}-${timestamp}.pdf`;
 
-    const options = {
-      margin: PDF_CONFIG.margin,
-      filename: `${safeTitle}-${timestamp}.pdf`,
-      image: PDF_CONFIG.image,
-      html2canvas: { ...PDF_CONFIG.html2canvas, scrollY: 0 },
-      jsPDF: PDF_CONFIG.jsPDF,
-      pagebreak: { mode: ['css', 'legacy'] }
-    };
+    // Generate PDF using section-by-section rendering (avoids canvas size limits)
+    const pdf = await generatePdfDocument({
+      includeScreenshot: includeScreenshot.checked,
+      includeContent: includeContent.checked,
+      screenshotDataUrls: visibleScreenshots,
+      evidenceHeaderElement: document.getElementById('evidenceHeader')!,
+      contentSectionElement: contentSection,
+      annotationOverlay: annotationOverlay,
+      containerElement: previewExportContainer,
+      onProgress: (msg) => { savePdfBtn.textContent = msg; },
+    });
 
-    // Generate PDF and add invisible text layer for searchability
-    const capturedData = currentData;
-    await html2pdf()
-      .set(options)
-      .from(container)
-      .toPdf()
-      .get('pdf')
-      .then((pdf: any) => {
-        addSearchableTextLayer(pdf, capturedData);
-        return pdf;
-      })
-      .save();
+    // Add invisible text layer for searchability
+    addSearchableTextLayer(pdf, currentData);
 
-    // Restore removed elements visibility (still hidden via .removed class)
-    removedEls.forEach(el => (el as HTMLElement).style.display = '');
-    screenshotSection.style.display = originalScreenshotDisplay;
-    contentSection.style.display = originalContentDisplay;
+    pdf.save(filename);
 
     showStatus('PDF saved successfully!', 'success');
   } catch (err) {
