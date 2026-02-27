@@ -24,6 +24,9 @@ export const FORUM_INDICATORS = [
   'community'
 ];
 
+// Chrome's maximum canvas pixel dimension (larger canvases render blank)
+export const CANVAS_MAX_DIMENSION = 65535;
+
 // PDF configuration
 export const PDF_CONFIG = {
   margin: 15,
