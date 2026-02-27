@@ -60,7 +60,11 @@ captureBtn.addEventListener('click', async () => {
       options
     };
 
-    await chrome.runtime.sendMessage(message);
+    const response = await chrome.runtime.sendMessage(message) as { ok?: boolean; error?: string } | undefined;
+    if (response && response.ok === false) {
+      showError(response.error || 'Capture already in progress');
+      return;
+    }
   } catch (err) {
     showError(`Failed to start capture: ${err instanceof Error ? err.message : 'Unknown error'}`);
   }

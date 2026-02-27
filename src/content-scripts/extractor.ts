@@ -236,7 +236,7 @@ async function requestViewportCapture(): Promise<string> {
 // Capture viewport with retry and exponential backoff for rate limit errors
 async function captureViewportWithRetry(
   currentDelay: number,
-  maxRetries = 5
+  maxRetries = CAPTURE_CONFIG.maxRetries
 ): Promise<{ dataUrl: string; nextDelay: number }> {
   let delay = currentDelay;
 
@@ -254,7 +254,7 @@ async function captureViewportWithRetry(
 
       if (isRateLimited && attempt < maxRetries - 1) {
         // Exponential backoff: increase delay by 50%
-        delay = Math.min(delay * 1.5, 2000); // Cap at 2 seconds
+        delay = Math.min(delay * 1.5, CAPTURE_CONFIG.maxBackoffMs);
         log(`Rate limited, retrying in ${delay}ms (attempt ${attempt + 2}/${maxRetries})`);
         await new Promise(r => setTimeout(r, delay));
         continue;
@@ -313,11 +313,13 @@ async function captureFullPage(): Promise<string> {
     await new Promise(r => setTimeout(r, CAPTURE_CONFIG.scrollDelay));
     log(`Capturing section ${i + 1}/${numCaptures}`);
 
-    // Wait for rate limit
-    const now = performance.now();
-    const elapsed = now - lastCaptureTime;
-    const wait = Math.max(CAPTURE_CONFIG.minCaptureDelay, adaptiveDelay - elapsed);
-    await new Promise(r => setTimeout(r, Math.max(wait, 0)));
+    // Wait for rate limit between sections; global cross-run cooldown is enforced in service worker
+    if (i > 0) {
+      const now = performance.now();
+      const elapsed = now - lastCaptureTime;
+      const wait = Math.max(CAPTURE_CONFIG.minCaptureDelay, adaptiveDelay - elapsed);
+      await new Promise(r => setTimeout(r, Math.max(wait, 0)));
+    }
 
     // Capture with retry logic
     const { dataUrl, nextDelay } = await captureViewportWithRetry(adaptiveDelay);

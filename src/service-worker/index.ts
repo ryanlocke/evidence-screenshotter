@@ -18,6 +18,21 @@ import { startOperation, log, recordError } from '../shared/error-reporter';
 // Track offscreen document state
 let offscreenDocumentCreating: Promise<void> | null = null;
 
+// Prevent concurrent capture requests (double-click, popup + icon click, etc.)
+let captureInProgress = false;
+
+// Timestamp of the last captureVisibleTab call (successful or failed)
+let lastCaptureVisibleTabTime = 0;
+
+// Serialize captureVisibleTab calls to avoid concurrent bursts across contexts
+let captureViewportQueue: Promise<void> = Promise.resolve();
+
+function tryStartCapture(): boolean {
+  if (captureInProgress) return false;
+  captureInProgress = true;
+  return true;
+}
+
 // Send progress update to popup (may fail if popup closed, that's ok)
 function sendProgress(stage: CaptureProgressMessage['stage'], message: string) {
   try {
@@ -77,17 +92,34 @@ async function sendError(error: string, openErrorPage = true, sourceTabIndex?: n
 
 // Capture visible tab screenshot
 async function captureViewport(tabId: number): Promise<string> {
-  const tab = await chrome.tabs.get(tabId);
-  if (!tab.windowId) throw new Error('Tab has no window');
+  const captureOperation = async (): Promise<string> => {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.windowId) throw new Error('Tab has no window');
 
-  // Use JPEG with quality 90 - much smaller than PNG, visually identical
-  // PNG can be 5-10MB, JPEG is typically 200-500KB
-  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-    format: 'jpeg',
-    quality: 90
-  });
+    // Enforce global cooldown across all captureVisibleTab call sites
+    if (lastCaptureVisibleTabTime > 0) {
+      const elapsed = performance.now() - lastCaptureVisibleTabTime;
+      const waitMs = CAPTURE_CONFIG.rateLimitMs - elapsed;
+      if (waitMs > 0) {
+        await sleep(waitMs);
+      }
+    }
 
-  return dataUrl;
+    try {
+      // Use JPEG with quality 90 - much smaller than PNG, visually identical
+      // PNG can be 5-10MB, JPEG is typically 200-500KB
+      return await chrome.tabs.captureVisibleTab(tab.windowId, {
+        format: 'jpeg',
+        quality: 90
+      });
+    } finally {
+      lastCaptureVisibleTabTime = performance.now();
+    }
+  };
+
+  const capturePromise = captureViewportQueue.then(captureOperation, captureOperation);
+  captureViewportQueue = capturePromise.then(() => undefined, () => undefined);
+  return capturePromise;
 }
 
 // Get image dimensions by asking the content script (viewport) and using the stitched height when applicable
@@ -329,6 +361,8 @@ async function handleCaptureRequest(options: CaptureOptions) {
     } catch (sendErr) {
       console.error('Failed to send error:', sendErr);
     }
+  } finally {
+    captureInProgress = false;
   }
 }
 
@@ -343,8 +377,13 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage & { type: string
       return false;
 
     case 'CAPTURE_REQUEST':
+      if (!tryStartCapture()) {
+        sendResponse({ ok: false, error: 'Capture already in progress' });
+        return false;
+      }
+      sendResponse({ ok: true });
       handleCaptureRequest(message.options);
-      break;
+      return false;
 
     case 'CAPTURE_VIEWPORT':
       // Handle viewport capture request from content script (for full-page stitching)
@@ -380,6 +419,10 @@ chrome.action.onClicked.addListener((tab) => {
   }
 
   console.log('Extension icon clicked, starting capture...');
+  if (!tryStartCapture()) {
+    console.log('Capture already in progress, ignoring icon click');
+    return;
+  }
   handleCaptureRequest({
     captureType: 'full-page',
     strategy: 'readability'

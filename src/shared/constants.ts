@@ -43,5 +43,7 @@ export const CAPTURE_CONFIG = {
   // Generous default to avoid silent truncation on long pages; adjust if memory is constrained
   maxPageHeight: 120000,   // max pixels for full-page capture
   minCaptureDelay: 100,    // ms floor between captures
-  rateLimitMs: 800         // Chrome captureVisibleTab limit ~2/s, use 800ms for safety
+  rateLimitMs: 600,        // Chrome captureVisibleTab limit ~2/s (500ms); 600ms = 1.2x safety margin
+  maxBackoffMs: 3000,      // Max delay when backing off from rate limit errors
+  maxRetries: 7            // Max retry attempts per viewport capture
 };
