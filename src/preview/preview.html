@@ -70,25 +70,25 @@
         <!-- Annotation Tools -->
         <section class="control-section">
           <h2>Annotate</h2>
-          <div class="tool-buttons">
-            <button id="highlightBtn" class="btn btn-tool" title="Highlight text">
-              <span class="btn-icon">🖍️</span>
+          <div class="tool-buttons" role="toolbar" aria-label="Annotation tools">
+            <button id="highlightBtn" class="btn btn-tool" type="button" title="Highlight text (1)" aria-label="Highlight text" aria-keyshortcuts="1">
+              <span class="btn-icon" aria-hidden="true">🖍️</span>
             </button>
-            <button id="arrowBtn" class="btn btn-tool" title="Draw arrow">
-              <span class="btn-icon">➡️</span>
+            <button id="arrowBtn" class="btn btn-tool" type="button" title="Draw arrow (2)" aria-label="Draw arrow" aria-keyshortcuts="2">
+              <span class="btn-icon" aria-hidden="true">➡️</span>
             </button>
-            <button id="boxBtn" class="btn btn-tool" title="Draw box">
-              <span class="btn-icon">▢</span>
+            <button id="boxBtn" class="btn btn-tool" type="button" title="Draw box (3)" aria-label="Draw box" aria-keyshortcuts="3">
+              <span class="btn-icon" aria-hidden="true">▢</span>
             </button>
-            <button id="clearAnnotationsBtn" class="btn btn-tool" title="Clear all annotations">
-              <span class="btn-icon">🗑️</span>
+            <button id="clearAnnotationsBtn" class="btn btn-tool" type="button" title="Clear all annotations" aria-label="Clear all annotations">
+              <span class="btn-icon" aria-hidden="true">🗑️</span>
             </button>
           </div>
           <label class="checkbox-label" id="boxFillOption" style="display: none;">
             <input type="checkbox" id="boxFilled" checked>
             <span>Filled box</span>
           </label>
-          <p class="hint tool-hint" id="toolHint">Select a tool to annotate</p>
+          <p class="hint tool-hint" id="toolHint">Select a tool to annotate. Shortcuts: 1 highlight, 2 arrow, 3 box, Esc deselect.</p>
         </section>
 
         <!-- Recent Captures -->

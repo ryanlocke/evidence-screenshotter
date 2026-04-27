@@ -14,12 +14,24 @@ import type {
 import { EXTENSION_VERSION } from '../shared/constants';
 import { CAPTURE_CONFIG } from '../shared/constants';
 import { startOperation, log, recordError } from '../shared/error-reporter';
+import { isBrowserInternalUrl } from './url-guard';
+import { describeInjectionError } from './injection-errors';
 
 // Track offscreen document state
 let offscreenDocumentCreating: Promise<void> | null = null;
 
 // Prevent concurrent capture requests (double-click, popup + icon click, etc.)
 let captureInProgress = false;
+
+// Tracks the active capture so cancel requests can target the right tab.
+let activeCaptureTabId: number | null = null;
+let captureCancelled = false;
+
+// Sentinel thrown when the user cancels; treated specially by the catch block
+// so we don't surface it as an error or open the error report page.
+class CaptureCancelledError extends Error {
+  constructor() { super('Capture cancelled by user'); this.name = 'CaptureCancelledError'; }
+}
 
 // Timestamp of the last captureVisibleTab call (successful or failed)
 let lastCaptureVisibleTabTime = 0;
@@ -30,63 +42,45 @@ let captureViewportQueue: Promise<void> = Promise.resolve();
 function tryStartCapture(): boolean {
   if (captureInProgress) return false;
   captureInProgress = true;
+  captureCancelled = false;
+  activeCaptureTabId = null;
   return true;
 }
 
-// Send progress update to popup (may fail if popup closed, that's ok)
+function throwIfCancelled() {
+  if (captureCancelled) throw new CaptureCancelledError();
+}
+
+// Fire-and-forget message to the popup. The popup may be closed, in which
+// case chrome throws synchronously or rejects; either way we don't care.
+function silentSend(message: ExtensionMessage): void {
+  try {
+    chrome.runtime.sendMessage(message)?.catch(() => {});
+  } catch {
+    // Popup closed; ignore.
+  }
+}
+
 function sendProgress(stage: CaptureProgressMessage['stage'], message: string) {
-  try {
-    chrome.runtime.sendMessage({
-      type: 'CAPTURE_PROGRESS',
-      stage,
-      message
-    } as CaptureProgressMessage);
-  } catch {
-    // Popup probably closed, ignore
-  }
+  silentSend({ type: 'CAPTURE_PROGRESS', stage, message } as CaptureProgressMessage);
 }
 
-// Send completion to popup (may fail if popup closed, that's ok)
 function sendComplete(success: boolean) {
-  try {
-    chrome.runtime.sendMessage({
-      type: 'CAPTURE_COMPLETE',
-      success
-    } as CaptureCompleteMessage);
-  } catch {
-    // Popup probably closed, ignore
-  }
+  silentSend({ type: 'CAPTURE_COMPLETE', success } as CaptureCompleteMessage);
 }
 
-// Send error to popup and open error report page
-async function sendError(error: string, openErrorPage = true, sourceTabIndex?: number) {
-  console.log('sendError called:', error, 'openErrorPage:', openErrorPage);
-
-  // Send to popup (may fail if popup is closed, that's ok)
+// Open the error report tab. Caller is responsible for ensuring recordError
+// has run first so the page reads fresh data from chrome.storage.local.
+async function openErrorReportTab(sourceTabIndex?: number) {
   try {
-    chrome.runtime.sendMessage({
-      type: 'CAPTURE_ERROR',
-      error
-    } as CaptureErrorMessage);
-  } catch (e) {
-    console.log('Could not send to popup (probably closed):', e);
-  }
-
-  // Open error report page for easy copying
-  if (openErrorPage) {
-    console.log('Opening error report page...');
-    try {
-      const errorPageUrl = chrome.runtime.getURL('error-report.html');
-      console.log('Error page URL:', errorPageUrl);
-      const createOptions: chrome.tabs.CreateProperties = { url: errorPageUrl, active: true };
-      if (sourceTabIndex !== undefined) {
-        createOptions.index = sourceTabIndex + 1;
-      }
-      await chrome.tabs.create(createOptions);
-      console.log('Error report page opened');
-    } catch (e) {
-      console.error('Failed to open error report page:', e);
+    const errorPageUrl = chrome.runtime.getURL('error-report.html');
+    const createOptions: chrome.tabs.CreateProperties = { url: errorPageUrl, active: true };
+    if (sourceTabIndex !== undefined) {
+      createOptions.index = sourceTabIndex + 1;
     }
+    await chrome.tabs.create(createOptions);
+  } catch (e) {
+    log(`Failed to open error report tab: ${e}`);
   }
 }
 
@@ -205,6 +199,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
     const url = tab.url;
     const pageTitle = tab.title || url;
     sourceTabIndex = tab.index;
+    activeCaptureTabId = tabId;
 
     // Start operation logging
     startOperation(`${options.captureType} capture`, url, {
@@ -213,10 +208,10 @@ async function handleCaptureRequest(options: CaptureOptions) {
       pageTitle
     });
     log('Capture request started');
+    throwIfCancelled();
 
     // Check for browser internal pages that can't be captured
-    const browserPagePrefixes = ['chrome://', 'chrome-extension://', 'brave://', 'edge://', 'about:', 'devtools://'];
-    if (browserPagePrefixes.some(prefix => url.startsWith(prefix))) {
+    if (isBrowserInternalUrl(url)) {
       throw new Error(`Cannot capture browser pages (${url.split('/')[0]}//). Please navigate to a regular webpage.`);
     }
 
@@ -230,12 +225,13 @@ async function handleCaptureRequest(options: CaptureOptions) {
       });
     } catch (injectErr) {
       log(`Script injection failed: ${injectErr}`);
-      throw new Error(`Cannot capture this page. It may be restricted or require special permissions.`);
+      throw new Error(describeInjectionError(injectErr));
     }
     console.timeEnd('injectScript');
 
     // Minimal delay to let content script initialize its listener
     await sleep(20);
+    throwIfCancelled();
 
     // Step 2: Capture screenshot
     sendProgress('capturing', options.captureType === 'full-page' ? 'Capturing full page...' : 'Capturing screenshot...');
@@ -246,11 +242,14 @@ async function handleCaptureRequest(options: CaptureOptions) {
 
     if (options.captureType === 'full-page') {
       // Request full-page capture from content script
-      const response = await sendMessageToTab<{ type: string; dataUrl?: string; error?: string }>(
+      const response = await sendMessageToTab<{ type: string; dataUrl?: string; error?: string; cancelled?: boolean }>(
         tabId,
         { type: 'CAPTURE_FULL_PAGE' }
       );
 
+      if (response.cancelled) {
+        throw new CaptureCancelledError();
+      }
       if (response.type === 'FULL_PAGE_ERROR' || !response.dataUrl) {
         throw new Error(response.error || 'Full page capture failed');
       }
@@ -263,6 +262,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
 
     console.timeEnd(screenshotTimer);
     console.log('Screenshot size:', screenshotDataUrl.length, 'chars');
+    throwIfCancelled();
     const dimensions = await getImageDimensions(tabId, screenshotDataUrl, options.captureType);
 
     const screenshot: ScreenshotData = {
@@ -311,7 +311,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
       await chrome.storage.local.set({ [CAPTURE_STORAGE_KEY]: evidenceData });
       console.timeEnd('storageSet');
     } catch (storageErr) {
-      console.error('Storage failed:', storageErr);
+      log(`Storage failed: ${storageErr}`);
       throw new Error(`Failed to save capture data: ${storageErr}`);
     }
 
@@ -323,7 +323,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
       await chrome.tabs.create({ url: previewUrl, index: sourceTabIndex + 1 });
       console.timeEnd('openPreview');
     } catch (tabErr) {
-      console.error('Failed to open preview tab:', tabErr);
+      log(`Failed to open preview tab: ${tabErr}`);
       throw new Error(`Failed to open preview: ${tabErr}`);
     }
 
@@ -331,38 +331,29 @@ async function handleCaptureRequest(options: CaptureOptions) {
     sendComplete(true);
 
   } catch (err) {
-    console.error('Capture failed:', err);
-    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-    console.log('Recording error and opening error page for:', errorMessage);
-
-    // Open error page FIRST, before anything else can fail (to the right of source tab if known)
-    try {
-      const errorPageUrl = chrome.runtime.getURL('error-report.html');
-      console.log('Opening error page:', errorPageUrl);
-      // sourceTabIndex may not be defined if error occurred before we got the tab
-      const createOptions: chrome.tabs.CreateProperties = { url: errorPageUrl, active: true };
-      if (typeof sourceTabIndex === 'number') {
-        createOptions.index = sourceTabIndex + 1;
-      }
-      await chrome.tabs.create(createOptions);
-    } catch (openErr) {
-      console.error('Failed to open error page:', openErr);
+    if (err instanceof CaptureCancelledError) {
+      log('Capture cancelled by user');
+      silentSend({ type: 'CAPTURE_CANCELLED' });
+      return;
     }
 
-    // Then record and notify
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+    log(`Capture failed: ${errorMessage}`);
+
+    // Record first so chrome.storage.local is up to date before the error
+    // report page reads it. recordError catches its own storage failures.
     try {
       await recordError(err instanceof Error ? err : new Error(String(err)));
     } catch (recordErr) {
-      console.error('Failed to record error:', recordErr);
+      log(`Failed to record error: ${recordErr}`);
     }
 
-    try {
-      await sendError(errorMessage, false); // false = don't open page again
-    } catch (sendErr) {
-      console.error('Failed to send error:', sendErr);
-    }
+    // Then open the report tab and notify the popup. Both are best-effort.
+    await openErrorReportTab(sourceTabIndex);
+    silentSend({ type: 'CAPTURE_ERROR', error: errorMessage } as CaptureErrorMessage);
   } finally {
     captureInProgress = false;
+    activeCaptureTabId = null;
   }
 }
 
@@ -400,6 +391,24 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage & { type: string
         sendResponse({ error: 'No tab ID available' });
         return false;
       }
+
+    case 'CAPTURE_CANCEL':
+      if (!captureInProgress) {
+        sendResponse({ ok: false, reason: 'no-capture' });
+        return false;
+      }
+      captureCancelled = true;
+      log('Cancel requested');
+      // Forward to content script so the full-page scroll loop stops at the
+      // next iteration. Best-effort; if the tab is gone we still flip the flag
+      // and the orchestration loop will throw on its next checkpoint.
+      if (activeCaptureTabId !== null) {
+        chrome.tabs.sendMessage(activeCaptureTabId, { type: 'CAPTURE_CANCEL' }).catch(() => {
+          // Tab gone, that's fine
+        });
+      }
+      sendResponse({ ok: true });
+      return false;
   }
 
   return false;
@@ -413,7 +422,7 @@ chrome.action.onClicked.addListener((tab) => {
   }
 
   // Skip chrome:// and extension pages
-  if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+  if (isBrowserInternalUrl(tab.url)) {
     console.log('Cannot capture browser internal pages');
     return;
   }
