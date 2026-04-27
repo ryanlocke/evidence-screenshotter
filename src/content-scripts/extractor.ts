@@ -7,6 +7,14 @@ import { captureViewportWithRetry } from './capture-retry';
 import { clampCanvasDimensions } from './capture-dimensions';
 import { waitForLayoutSettle, makeBrowserSettleDeps } from './scroll-settle';
 
+// Set when the service worker forwards a CAPTURE_CANCEL. The full-page
+// scroll-stitching loop checks this between iterations and aborts cleanly.
+let captureCancelled = false;
+
+class CaptureCancelledError extends Error {
+  constructor() { super('Capture cancelled by user'); this.name = 'CaptureCancelledError'; }
+}
+
 // Request a single viewport capture from service worker
 async function requestViewportCapture(): Promise<string> {
   return new Promise<string>((resolve, reject) => {
@@ -73,7 +81,11 @@ async function captureFullPage(): Promise<string> {
   const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
   const settleDeps = makeBrowserSettleDeps();
 
+  // Reset cancellation state at the start of each full-page capture.
+  captureCancelled = false;
+
   for (let i = 0; i < numCaptures; i++) {
+    if (captureCancelled) throw new CaptureCancelledError();
     const scrollY = i * viewportHeight;
 
     window.scrollTo(0, scrollY);
@@ -82,6 +94,7 @@ async function captureFullPage(): Promise<string> {
       maxWaitMs: CAPTURE_CONFIG.scrollMaxSettleMs,
       stableFrames: CAPTURE_CONFIG.scrollStableFrames
     });
+    if (captureCancelled) throw new CaptureCancelledError();
     log(`Capturing section ${i + 1}/${numCaptures}`);
 
     // Wait for rate limit between sections; global cross-run cooldown is enforced in service worker
@@ -165,11 +178,22 @@ chrome.runtime.onMessage.addListener((message: ExtractContentMessage & { type: s
       log('Full page capture completed successfully');
       sendResponse({ type: 'FULL_PAGE_CAPTURED', dataUrl });
     }).catch(async (err) => {
+      if (err instanceof CaptureCancelledError) {
+        log('Full page capture cancelled');
+        sendResponse({ type: 'FULL_PAGE_ERROR', error: 'cancelled', cancelled: true });
+        return;
+      }
       console.error('Full page capture failed:', err);
       await recordError(err instanceof Error ? err : new Error(String(err)));
       sendResponse({ type: 'FULL_PAGE_ERROR', error: String(err) });
     });
     return true;
+  }
+
+  if (message.type === 'CAPTURE_CANCEL') {
+    captureCancelled = true;
+    sendResponse({ ok: true });
+    return false;
   }
 
   if (message.type === 'GET_DIMENSIONS') {

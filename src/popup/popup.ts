@@ -1,9 +1,16 @@
 import type { CaptureOptions } from '../shared/types';
-import type { CaptureRequestMessage, CaptureProgressMessage, CaptureCompleteMessage, CaptureErrorMessage } from '../shared/messages';
+import type {
+  CaptureRequestMessage,
+  CaptureProgressMessage,
+  CaptureCompleteMessage,
+  CaptureErrorMessage,
+  CaptureCancelledMessage
+} from '../shared/messages';
 import { getErrorSummary, generateErrorReport, clearErrorLog } from '../shared/error-reporter';
 
 // DOM elements
 const captureBtn = document.getElementById('captureBtn') as HTMLButtonElement;
+const cancelBtn = document.getElementById('cancelBtn') as HTMLButtonElement;
 const optionsDiv = document.getElementById('options') as HTMLDivElement;
 const progressDiv = document.getElementById('progress') as HTMLDivElement;
 const progressText = document.getElementById('progressText') as HTMLParagraphElement;
@@ -36,12 +43,22 @@ function showProgress(message: string) {
   errorDiv.classList.add('hidden');
   progressDiv.classList.remove('hidden');
   progressText.textContent = message;
+  cancelBtn.disabled = false;
+  cancelBtn.textContent = 'Cancel';
 }
 
 function showError(message: string) {
   progressDiv.classList.add('hidden');
   errorDiv.classList.remove('hidden');
   errorText.textContent = message;
+  optionsDiv.classList.remove('hidden');
+  captureBtn.classList.remove('hidden');
+  captureBtn.disabled = false;
+}
+
+function showIdle() {
+  progressDiv.classList.add('hidden');
+  errorDiv.classList.add('hidden');
   optionsDiv.classList.remove('hidden');
   captureBtn.classList.remove('hidden');
   captureBtn.disabled = false;
@@ -71,7 +88,7 @@ captureBtn.addEventListener('click', async () => {
 });
 
 // Listen for messages from service worker
-chrome.runtime.onMessage.addListener((message: CaptureProgressMessage | CaptureCompleteMessage | CaptureErrorMessage) => {
+chrome.runtime.onMessage.addListener((message: CaptureProgressMessage | CaptureCompleteMessage | CaptureErrorMessage | CaptureCancelledMessage) => {
   switch (message.type) {
     case 'CAPTURE_PROGRESS':
       showProgress(message.message);
@@ -87,6 +104,22 @@ chrome.runtime.onMessage.addListener((message: CaptureProgressMessage | CaptureC
     case 'CAPTURE_ERROR':
       showError(message.error);
       break;
+    case 'CAPTURE_CANCELLED':
+      showIdle();
+      break;
+  }
+});
+
+// Cancel in-progress capture
+cancelBtn.addEventListener('click', async () => {
+  cancelBtn.disabled = true;
+  cancelBtn.textContent = 'Cancelling...';
+  progressText.textContent = 'Cancelling capture...';
+  try {
+    await chrome.runtime.sendMessage({ type: 'CAPTURE_CANCEL' });
+  } catch {
+    // Service worker may have already finished or restarted; UI will recover
+    // when CAPTURE_CANCELLED, CAPTURE_COMPLETE, or CAPTURE_ERROR arrives.
   }
 });
 

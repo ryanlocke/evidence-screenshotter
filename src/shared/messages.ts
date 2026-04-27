@@ -11,6 +11,8 @@ export type MessageType =
   | 'CAPTURE_COMPLETE'
   | 'CAPTURE_ERROR'
   | 'CAPTURE_PROGRESS'
+  | 'CAPTURE_CANCEL'
+  | 'CAPTURE_CANCELLED'
   | 'GET_DIMENSIONS'
   | 'DIMENSIONS_RESPONSE';
 
@@ -87,6 +89,18 @@ export interface CaptureProgressMessage extends BaseMessage {
   message: string;
 }
 
+// Popup -> Service Worker (and Service Worker -> Content Script): cancel an
+// in-progress capture. Cancellation is best-effort; the capture stops at the
+// next safe checkpoint.
+export interface CaptureCancelMessage extends BaseMessage {
+  type: 'CAPTURE_CANCEL';
+}
+
+// Service Worker -> Popup: capture was cancelled by the user
+export interface CaptureCancelledMessage extends BaseMessage {
+  type: 'CAPTURE_CANCELLED';
+}
+
 // Union type for all messages
 export type ExtensionMessage =
   | CaptureRequestMessage
@@ -99,4 +113,6 @@ export type ExtensionMessage =
   | PDFReadyMessage
   | CaptureCompleteMessage
   | CaptureErrorMessage
-  | CaptureProgressMessage;
+  | CaptureProgressMessage
+  | CaptureCancelMessage
+  | CaptureCancelledMessage;

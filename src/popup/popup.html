@@ -35,9 +35,10 @@
 
       <p class="hint">Opens preview where you can customize and save as PDF</p>
 
-      <div id="progress" class="progress hidden">
-        <div class="spinner"></div>
+      <div id="progress" class="progress hidden" role="status" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
         <p id="progressText">Capturing...</p>
+        <button id="cancelBtn" class="cancel-btn" type="button">Cancel</button>
       </div>
 
       <div id="error" class="error hidden">

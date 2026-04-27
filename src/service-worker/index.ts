@@ -23,6 +23,16 @@ let offscreenDocumentCreating: Promise<void> | null = null;
 // Prevent concurrent capture requests (double-click, popup + icon click, etc.)
 let captureInProgress = false;
 
+// Tracks the active capture so cancel requests can target the right tab.
+let activeCaptureTabId: number | null = null;
+let captureCancelled = false;
+
+// Sentinel thrown when the user cancels; treated specially by the catch block
+// so we don't surface it as an error or open the error report page.
+class CaptureCancelledError extends Error {
+  constructor() { super('Capture cancelled by user'); this.name = 'CaptureCancelledError'; }
+}
+
 // Timestamp of the last captureVisibleTab call (successful or failed)
 let lastCaptureVisibleTabTime = 0;
 
@@ -32,7 +42,13 @@ let captureViewportQueue: Promise<void> = Promise.resolve();
 function tryStartCapture(): boolean {
   if (captureInProgress) return false;
   captureInProgress = true;
+  captureCancelled = false;
+  activeCaptureTabId = null;
   return true;
+}
+
+function throwIfCancelled() {
+  if (captureCancelled) throw new CaptureCancelledError();
 }
 
 // Send progress update to popup (may fail if popup closed, that's ok)
@@ -207,6 +223,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
     const url = tab.url;
     const pageTitle = tab.title || url;
     sourceTabIndex = tab.index;
+    activeCaptureTabId = tabId;
 
     // Start operation logging
     startOperation(`${options.captureType} capture`, url, {
@@ -215,6 +232,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
       pageTitle
     });
     log('Capture request started');
+    throwIfCancelled();
 
     // Check for browser internal pages that can't be captured
     if (isBrowserInternalUrl(url)) {
@@ -237,6 +255,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
 
     // Minimal delay to let content script initialize its listener
     await sleep(20);
+    throwIfCancelled();
 
     // Step 2: Capture screenshot
     sendProgress('capturing', options.captureType === 'full-page' ? 'Capturing full page...' : 'Capturing screenshot...');
@@ -247,11 +266,14 @@ async function handleCaptureRequest(options: CaptureOptions) {
 
     if (options.captureType === 'full-page') {
       // Request full-page capture from content script
-      const response = await sendMessageToTab<{ type: string; dataUrl?: string; error?: string }>(
+      const response = await sendMessageToTab<{ type: string; dataUrl?: string; error?: string; cancelled?: boolean }>(
         tabId,
         { type: 'CAPTURE_FULL_PAGE' }
       );
 
+      if (response.cancelled) {
+        throw new CaptureCancelledError();
+      }
       if (response.type === 'FULL_PAGE_ERROR' || !response.dataUrl) {
         throw new Error(response.error || 'Full page capture failed');
       }
@@ -264,6 +286,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
 
     console.timeEnd(screenshotTimer);
     console.log('Screenshot size:', screenshotDataUrl.length, 'chars');
+    throwIfCancelled();
     const dimensions = await getImageDimensions(tabId, screenshotDataUrl, options.captureType);
 
     const screenshot: ScreenshotData = {
@@ -332,6 +355,16 @@ async function handleCaptureRequest(options: CaptureOptions) {
     sendComplete(true);
 
   } catch (err) {
+    if (err instanceof CaptureCancelledError) {
+      log('Capture cancelled by user');
+      try {
+        chrome.runtime.sendMessage({ type: 'CAPTURE_CANCELLED' });
+      } catch {
+        // Popup probably closed, ignore
+      }
+      return;
+    }
+
     console.error('Capture failed:', err);
     const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
     console.log('Recording error and opening error page for:', errorMessage);
@@ -364,6 +397,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
     }
   } finally {
     captureInProgress = false;
+    activeCaptureTabId = null;
   }
 }
 
@@ -401,6 +435,24 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage & { type: string
         sendResponse({ error: 'No tab ID available' });
         return false;
       }
+
+    case 'CAPTURE_CANCEL':
+      if (!captureInProgress) {
+        sendResponse({ ok: false, reason: 'no-capture' });
+        return false;
+      }
+      captureCancelled = true;
+      log('Cancel requested');
+      // Forward to content script so the full-page scroll loop stops at the
+      // next iteration. Best-effort; if the tab is gone we still flip the flag
+      // and the orchestration loop will throw on its next checkpoint.
+      if (activeCaptureTabId !== null) {
+        chrome.tabs.sendMessage(activeCaptureTabId, { type: 'CAPTURE_CANCEL' }).catch(() => {
+          // Tab gone, that's fine
+        });
+      }
+      sendResponse({ ok: true });
+      return false;
   }
 
   return false;
