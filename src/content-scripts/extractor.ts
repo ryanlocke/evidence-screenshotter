@@ -5,6 +5,7 @@ import { startOperation, log, recordError } from '../shared/error-reporter';
 import { extractContent } from './extraction';
 import { captureViewportWithRetry } from './capture-retry';
 import { clampCanvasDimensions } from './capture-dimensions';
+import { waitForLayoutSettle, makeBrowserSettleDeps } from './scroll-settle';
 
 // Request a single viewport capture from service worker
 async function requestViewportCapture(): Promise<string> {
@@ -70,12 +71,17 @@ async function captureFullPage(): Promise<string> {
   let lastCaptureTime = performance.now();
 
   const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+  const settleDeps = makeBrowserSettleDeps();
 
   for (let i = 0; i < numCaptures; i++) {
     const scrollY = i * viewportHeight;
 
     window.scrollTo(0, scrollY);
-    await sleep(CAPTURE_CONFIG.scrollDelay);
+    await waitForLayoutSettle(settleDeps, {
+      minWaitMs: CAPTURE_CONFIG.scrollMinSettleMs,
+      maxWaitMs: CAPTURE_CONFIG.scrollMaxSettleMs,
+      stableFrames: CAPTURE_CONFIG.scrollStableFrames
+    });
     log(`Capturing section ${i + 1}/${numCaptures}`);
 
     // Wait for rate limit between sections; global cross-run cooldown is enforced in service worker

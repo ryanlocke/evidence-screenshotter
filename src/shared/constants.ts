@@ -42,9 +42,13 @@ export const PDF_CONFIG = {
 
 // Capture timing
 export const CAPTURE_CONFIG = {
-  scrollDelay: 150,        // ms to wait after each scroll
+  // Adaptive scroll settle: after scrolling, wait for layout to stop changing
+  // for `scrollStableFrames` consecutive animation frames. Bounded by min/max.
+  scrollMinSettleMs: 50,   // never proceed before this elapses (browser repaint floor)
+  scrollMaxSettleMs: 800,  // cap on settle wait per scroll step
+  scrollStableFrames: 3,
   // Generous default to avoid silent truncation on long pages; adjust if memory is constrained
-  maxPageHeight: 120000,   // max pixels for full-page capture
+  maxPageHeight: 120000,   // max pixels for full-page capture (further clamped by canvas hardware limit)
   minCaptureDelay: 100,    // ms floor between captures
   rateLimitMs: 600,        // Chrome captureVisibleTab limit ~2/s (500ms); 600ms = 1.2x safety margin
   maxBackoffMs: 3000,      // Max delay when backing off from rate limit errors
