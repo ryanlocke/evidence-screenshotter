@@ -1,9 +1,10 @@
 import type { ExtractContentMessage, ExtractionCompleteMessage } from '../shared/messages';
 import type { DimensionsResponseMessage } from '../shared/messages';
-import { CAPTURE_CONFIG } from '../shared/constants';
+import { CAPTURE_CONFIG, CANVAS_MAX_DIMENSION } from '../shared/constants';
 import { startOperation, log, recordError } from '../shared/error-reporter';
 import { extractContent } from './extraction';
 import { captureViewportWithRetry } from './capture-retry';
+import { clampCanvasDimensions } from './capture-dimensions';
 
 // Request a single viewport capture from service worker
 async function requestViewportCapture(): Promise<string> {
@@ -32,25 +33,36 @@ async function captureFullPage(): Promise<string> {
     document.documentElement.scrollHeight
   );
 
-  const maxHeight = Math.min(totalHeight, CAPTURE_CONFIG.maxPageHeight);
-  const numCaptures = Math.ceil(maxHeight / viewportHeight);
+  const { canvasWidth, canvasHeight, effectiveMaxHeight, wasClampedByCanvasLimit } =
+    clampCanvasDimensions({
+      viewportWidth,
+      totalHeight,
+      dpr,
+      configuredMaxHeight: CAPTURE_CONFIG.maxPageHeight,
+      canvasMaxDimension: CANVAS_MAX_DIMENSION
+    });
+  const numCaptures = Math.ceil(effectiveMaxHeight / viewportHeight);
 
   startOperation('Full-page capture', location.href, {
     viewportHeight,
     viewportWidth,
     totalHeight,
-    maxHeight,
+    effectiveMaxHeight,
     numCaptures,
-    dpr
+    dpr,
+    wasClampedByCanvasLimit
   });
 
   log(`Page dimensions: ${viewportWidth}x${totalHeight}, capturing ${numCaptures} sections`);
+  if (wasClampedByCanvasLimit) {
+    log(`Note: page truncated to ${effectiveMaxHeight}px to fit the browser's canvas limit`);
+  }
 
   const originalScrollY = window.scrollY;
 
   const canvas = document.createElement('canvas');
-  canvas.width = viewportWidth * dpr;
-  canvas.height = maxHeight * dpr;
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
   const ctx = canvas.getContext('2d')!;
 
   // Adaptive delay - starts at configured rate limit, adjusts based on success/failure

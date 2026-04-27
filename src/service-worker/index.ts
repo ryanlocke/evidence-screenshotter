@@ -15,6 +15,7 @@ import { EXTENSION_VERSION } from '../shared/constants';
 import { CAPTURE_CONFIG } from '../shared/constants';
 import { startOperation, log, recordError } from '../shared/error-reporter';
 import { isBrowserInternalUrl } from './url-guard';
+import { describeInjectionError } from './injection-errors';
 
 // Track offscreen document state
 let offscreenDocumentCreating: Promise<void> | null = null;
@@ -230,7 +231,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
       });
     } catch (injectErr) {
       log(`Script injection failed: ${injectErr}`);
-      throw new Error(`Cannot capture this page. It may be restricted or require special permissions.`);
+      throw new Error(describeInjectionError(injectErr));
     }
     console.timeEnd('injectScript');
 
