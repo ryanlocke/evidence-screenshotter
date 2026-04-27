@@ -1,220 +1,9 @@
-import { Readability } from '@mozilla/readability';
-import DOMPurify from 'dompurify';
-import type { ExtractedContent, PageType, ExtractionStrategy } from '../shared/types';
 import type { ExtractContentMessage, ExtractionCompleteMessage } from '../shared/messages';
-import { SOCIAL_MEDIA_DOMAINS, FORUM_INDICATORS, CAPTURE_CONFIG } from '../shared/constants';
-import type { DimensionsResponseMessage, GetDimensionsMessage } from '../shared/messages';
+import type { DimensionsResponseMessage } from '../shared/messages';
+import { CAPTURE_CONFIG } from '../shared/constants';
 import { startOperation, log, recordError } from '../shared/error-reporter';
-import { collapseFragmentedParagraphs } from './paragraph-utils';
-
-// Detect page type based on URL and DOM structure
-function detectPageType(url: string, doc: Document): PageType {
-  const hostname = new URL(url).hostname.toLowerCase();
-
-  // Check for social media
-  if (SOCIAL_MEDIA_DOMAINS.some(domain => hostname.includes(domain))) {
-    return 'social-media';
-  }
-
-  // Check for forums
-  if (FORUM_INDICATORS.some(indicator => hostname.includes(indicator) || url.toLowerCase().includes(indicator))) {
-    return 'forum';
-  }
-
-  // Check for article-like structure
-  if (isLikelyArticle(doc)) {
-    return 'article';
-  }
-
-  return 'generic';
-}
-
-// Check if page looks like an article
-function isLikelyArticle(doc: Document): boolean {
-  const hasArticleTag = doc.querySelector('article') !== null;
-  const hasMainContent = doc.querySelector('main, [role="main"]') !== null;
-  const hasAuthor = doc.querySelector('[rel="author"], .author, .byline') !== null;
-  const hasPublishDate = doc.querySelector('time, .date, .published') !== null;
-
-  const ogType = doc.querySelector('meta[property="og:type"]')?.getAttribute('content');
-  const isOgArticle = ogType === 'article';
-
-  let score = 0;
-  if (hasArticleTag) score += 2;
-  if (hasMainContent) score += 1;
-  if (hasAuthor) score += 1;
-  if (hasPublishDate) score += 1;
-  if (isOgArticle) score += 2;
-
-  return score >= 3;
-}
-
-// Extract content using Readability.js
-function extractWithReadability(doc: Document): ExtractedContent | null {
-  try {
-    // Clone without serialize/parse round-trip to reduce CPU/memory
-    const docClone = document.implementation.createHTMLDocument('reader');
-    docClone.documentElement.innerHTML = doc.documentElement.innerHTML;
-
-    const reader = new Readability(docClone);
-    const article = reader.parse();
-
-    if (!article) {
-      return null;
-    }
-
-    // Pre-sanitization: filter images while original attributes are still present
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = article.content;
-
-    tempDiv.querySelectorAll('img').forEach(img => {
-      const alt = (img.alt || '').toLowerCase();
-      const src = img.getAttribute('src') || '';
-      const width = parseInt(img.getAttribute('width') || '0', 10);
-      const height = parseInt(img.getAttribute('height') || '0', 10);
-
-      // Alt-text based decorative detection
-      const decorativeKeywords = [
-        'profile image', 'profile photo', 'profile picture',
-        'user avatar', 'avatar', 'headshot', 'mugshot', 'thumbnail'
-      ];
-      const isDecorativeAlt = decorativeKeywords.some(keyword => alt.includes(keyword));
-      const isBracketedPlaceholder = /^\[.*image.*\]$/i.test(img.alt || '');
-
-      // Missing/empty src
-      const isEmptySrc = !src || src === 'data:,';
-
-      // 1x1 tracking GIF signatures (keep non-pixel GIF data URIs)
-      const pixelGifSignatures = ['R0lGODlhAQAB', 'R0lGODdhAQAB'];
-      const isLikelyTrackingGif = src.startsWith('data:image/gif;base64,') &&
-        (pixelGifSignatures.some(sig => src.includes(sig)) || (width === 1 && height === 1));
-
-      // SVG data URIs (fail to render in html2pdf)
-      const isSvgDataUri = src.startsWith('data:image/svg');
-
-      // Small images with empty alt (icons/decorative)
-      const isSmallIcon = width > 0 && height > 0 && width <= 48 && height <= 48 && alt === '';
-
-      // Explicitly marked as decorative
-      const isAriaDecorative = img.getAttribute('aria-hidden') === 'true' ||
-        img.getAttribute('role') === 'presentation';
-
-      if (isDecorativeAlt || isBracketedPlaceholder || isEmptySrc || isLikelyTrackingGif ||
-          isSvgDataUri || isSmallIcon || isAriaDecorative) {
-        img.remove();
-      }
-    });
-
-    // Sanitize content (with table support)
-    const sanitizedContent = DOMPurify.sanitize(tempDiv.innerHTML, {
-      ALLOWED_TAGS: [
-        'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li',
-        'blockquote', 'a', 'strong', 'em', 'img', 'figure', 'figcaption', 'br', 'hr',
-        'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption'
-      ],
-      ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'scope']
-    });
-
-    // Post-sanitization processing
-    tempDiv.innerHTML = sanitizedContent;
-
-    // Collapse fragmented paragraphs from Readability's div-to-p conversion
-    collapseFragmentedParagraphs(tempDiv);
-
-    const cleanedContent = tempDiv.innerHTML;
-
-    // Extract remaining images
-    const images = Array.from(tempDiv.querySelectorAll('img')).map(img => ({
-      src: img.src,
-      alt: img.alt || '',
-      caption: img.closest('figure')?.querySelector('figcaption')?.textContent || undefined
-    }));
-
-    return {
-      title: article.title,
-      content: cleanedContent,
-      textContent: article.textContent || '',
-      byline: article.byline || undefined,
-      publishedTime: article.publishedTime || undefined,
-      images,
-      pageType: detectPageType(location.href, doc),
-      confidence: 0.8
-    };
-  } catch (err) {
-    console.error('Readability extraction failed:', err);
-    return null;
-  }
-}
-
-// Fallback extraction for pages where Readability fails
-function extractFallback(doc: Document): ExtractedContent {
-  const title = doc.title || 'Untitled Page';
-
-  // Try to find main content area
-  const mainElement = doc.querySelector('main, article, [role="main"], .content, #content, .post, .entry') ||
-    doc.body;
-
-  // Get text content
-  const textContent = mainElement.textContent?.trim() || '';
-
-  // Simple HTML cleanup
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = mainElement.innerHTML;
-
-  // Remove scripts, styles, nav, footer, aside
-  const toRemove = tempDiv.querySelectorAll('script, style, nav, footer, aside, header, .ad, .advertisement, .sidebar');
-  toRemove.forEach(el => el.remove());
-
-  const sanitizedContent = DOMPurify.sanitize(tempDiv.innerHTML, {
-    ALLOWED_TAGS: [
-      'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li',
-      'blockquote', 'a', 'strong', 'em', 'img', 'figure', 'figcaption', 'br', 'hr',
-      'div', 'span', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption'
-    ],
-    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'scope']
-  });
-
-  return {
-    title,
-    content: sanitizedContent,
-    textContent: textContent.slice(0, 50000), // Limit text length
-    images: [],
-    pageType: detectPageType(location.href, doc),
-    confidence: 0.4
-  };
-}
-
-// Main extraction function
-function extractContent(strategy: ExtractionStrategy): ExtractedContent {
-  const doc = document;
-
-  // Try Readability first
-  const readabilityResult = extractWithReadability(doc);
-
-  if (readabilityResult && readabilityResult.confidence > 0.5) {
-    return readabilityResult;
-  }
-
-  // For heuristic strategy or if Readability fails, use fallback
-  if (strategy === 'heuristic' || !readabilityResult) {
-    const fallbackResult = extractFallback(doc);
-
-    // If we have partial Readability result, merge with fallback
-    if (readabilityResult) {
-      return {
-        ...fallbackResult,
-        title: readabilityResult.title || fallbackResult.title,
-        byline: readabilityResult.byline,
-        publishedTime: readabilityResult.publishedTime,
-        confidence: Math.max(readabilityResult.confidence, fallbackResult.confidence)
-      };
-    }
-
-    return fallbackResult;
-  }
-
-  return readabilityResult;
-}
+import { extractContent } from './extraction';
+import { captureViewportWithRetry } from './capture-retry';
 
 // Request a single viewport capture from service worker
 async function requestViewportCapture(): Promise<string> {
@@ -233,39 +22,6 @@ async function requestViewportCapture(): Promise<string> {
   });
 }
 
-// Capture viewport with retry and exponential backoff for rate limit errors
-async function captureViewportWithRetry(
-  currentDelay: number,
-  maxRetries = CAPTURE_CONFIG.maxRetries
-): Promise<{ dataUrl: string; nextDelay: number }> {
-  let delay = currentDelay;
-
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      const dataUrl = await requestViewportCapture();
-      // Success - cautiously decay delay toward the base rate limit after backoff
-      const reducedDelay = delay > CAPTURE_CONFIG.rateLimitMs
-        ? Math.max(CAPTURE_CONFIG.rateLimitMs, delay * 0.9)
-        : delay;
-      return { dataUrl, nextDelay: reducedDelay };
-    } catch (err) {
-      const isRateLimited = err instanceof Error &&
-        err.message.includes('MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND');
-
-      if (isRateLimited && attempt < maxRetries - 1) {
-        // Exponential backoff: increase delay by 50%
-        delay = Math.min(delay * 1.5, CAPTURE_CONFIG.maxBackoffMs);
-        log(`Rate limited, retrying in ${delay}ms (attempt ${attempt + 2}/${maxRetries})`);
-        await new Promise(r => setTimeout(r, delay));
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  throw new Error('Max retries exceeded for viewport capture');
-}
-
 // Full-page screenshot via scroll-stitching
 async function captureFullPage(): Promise<string> {
   const viewportHeight = window.innerHeight;
@@ -276,11 +32,9 @@ async function captureFullPage(): Promise<string> {
     document.documentElement.scrollHeight
   );
 
-  // Limit to configurable max (avoid memory issues on very long/infinite pages)
   const maxHeight = Math.min(totalHeight, CAPTURE_CONFIG.maxPageHeight);
   const numCaptures = Math.ceil(maxHeight / viewportHeight);
 
-  // Start operation logging
   startOperation('Full-page capture', location.href, {
     viewportHeight,
     viewportWidth,
@@ -292,10 +46,8 @@ async function captureFullPage(): Promise<string> {
 
   log(`Page dimensions: ${viewportWidth}x${totalHeight}, capturing ${numCaptures} sections`);
 
-  // Store original scroll position
   const originalScrollY = window.scrollY;
 
-  // Create canvas at device pixel ratio scale
   const canvas = document.createElement('canvas');
   canvas.width = viewportWidth * dpr;
   canvas.height = maxHeight * dpr;
@@ -305,12 +57,13 @@ async function captureFullPage(): Promise<string> {
   let adaptiveDelay = CAPTURE_CONFIG.rateLimitMs;
   let lastCaptureTime = performance.now();
 
+  const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
   for (let i = 0; i < numCaptures; i++) {
     const scrollY = i * viewportHeight;
 
-    // Scroll to position and wait for content to settle
     window.scrollTo(0, scrollY);
-    await new Promise(r => setTimeout(r, CAPTURE_CONFIG.scrollDelay));
+    await sleep(CAPTURE_CONFIG.scrollDelay);
     log(`Capturing section ${i + 1}/${numCaptures}`);
 
     // Wait for rate limit between sections; global cross-run cooldown is enforced in service worker
@@ -318,11 +71,15 @@ async function captureFullPage(): Promise<string> {
       const now = performance.now();
       const elapsed = now - lastCaptureTime;
       const wait = Math.max(CAPTURE_CONFIG.minCaptureDelay, adaptiveDelay - elapsed);
-      await new Promise(r => setTimeout(r, Math.max(wait, 0)));
+      await sleep(Math.max(wait, 0));
     }
 
-    // Capture with retry logic
-    const { dataUrl, nextDelay } = await captureViewportWithRetry(adaptiveDelay);
+    const { dataUrl, nextDelay } = await captureViewportWithRetry({
+      requestCapture: requestViewportCapture,
+      sleep,
+      log,
+      currentDelay: adaptiveDelay
+    });
     adaptiveDelay = nextDelay;
     lastCaptureTime = performance.now();
 
@@ -330,7 +87,6 @@ async function captureFullPage(): Promise<string> {
     await new Promise<void>((resolve) => {
       const img = new Image();
       img.onload = () => {
-        // The image is already at dpr scale, draw directly at the scaled position
         const destY = scrollY * dpr;
         const destHeight = Math.min(img.height, canvas.height - destY);
         ctx.drawImage(
@@ -344,20 +100,17 @@ async function captureFullPage(): Promise<string> {
     });
   }
 
-  // Restore scroll position
   window.scrollTo(0, originalScrollY);
 
-  // Return as JPEG for smaller size
   return canvas.toDataURL('image/jpeg', 0.9);
 }
 
-// Listen for messages
 chrome.runtime.onMessage.addListener((message: ExtractContentMessage & { type: string }, sender, sendResponse) => {
   if (message.type === 'EXTRACT_CONTENT') {
     console.log('Content script: extracting with strategy:', message.strategy);
 
     try {
-      const content = extractContent(message.strategy);
+      const content = extractContent(document, message.strategy, location.href);
 
       const response: ExtractionCompleteMessage = {
         type: 'EXTRACTION_COMPLETE',
@@ -369,7 +122,6 @@ chrome.runtime.onMessage.addListener((message: ExtractContentMessage & { type: s
       sendResponse(response);
     } catch (err) {
       console.error('Content extraction error:', err);
-      // Send minimal fallback response
       const response: ExtractionCompleteMessage = {
         type: 'EXTRACTION_COMPLETE',
         content: {
@@ -386,7 +138,7 @@ chrome.runtime.onMessage.addListener((message: ExtractContentMessage & { type: s
       sendResponse(response);
     }
 
-    return true; // Keep channel open for async response
+    return true;
   }
 
   if (message.type === 'CAPTURE_FULL_PAGE') {
@@ -399,7 +151,7 @@ chrome.runtime.onMessage.addListener((message: ExtractContentMessage & { type: s
       await recordError(err instanceof Error ? err : new Error(String(err)));
       sendResponse({ type: 'FULL_PAGE_ERROR', error: String(err) });
     });
-    return true; // Keep channel open for async response
+    return true;
   }
 
   if (message.type === 'GET_DIMENSIONS') {

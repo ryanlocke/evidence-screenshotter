@@ -14,6 +14,7 @@ import type {
 import { EXTENSION_VERSION } from '../shared/constants';
 import { CAPTURE_CONFIG } from '../shared/constants';
 import { startOperation, log, recordError } from '../shared/error-reporter';
+import { isBrowserInternalUrl } from './url-guard';
 
 // Track offscreen document state
 let offscreenDocumentCreating: Promise<void> | null = null;
@@ -215,8 +216,7 @@ async function handleCaptureRequest(options: CaptureOptions) {
     log('Capture request started');
 
     // Check for browser internal pages that can't be captured
-    const browserPagePrefixes = ['chrome://', 'chrome-extension://', 'brave://', 'edge://', 'about:', 'devtools://'];
-    if (browserPagePrefixes.some(prefix => url.startsWith(prefix))) {
+    if (isBrowserInternalUrl(url)) {
       throw new Error(`Cannot capture browser pages (${url.split('/')[0]}//). Please navigate to a regular webpage.`);
     }
 
@@ -413,7 +413,7 @@ chrome.action.onClicked.addListener((tab) => {
   }
 
   // Skip chrome:// and extension pages
-  if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+  if (isBrowserInternalUrl(tab.url)) {
     console.log('Cannot capture browser internal pages');
     return;
   }
