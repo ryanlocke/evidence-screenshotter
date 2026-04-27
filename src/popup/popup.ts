@@ -195,5 +195,18 @@ reportModal.addEventListener('click', (e) => {
   }
 });
 
+// Keyboard shortcuts: Escape closes the report modal, or cancels an
+// in-progress capture if no modal is open.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!reportModal.classList.contains('hidden')) {
+    hideReportModal();
+    return;
+  }
+  if (!progressDiv.classList.contains('hidden') && !cancelBtn.disabled) {
+    cancelBtn.click();
+  }
+});
+
 // Initialize error badge
 updateErrorBadge();

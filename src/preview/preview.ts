@@ -270,7 +270,7 @@ function updateAnnotationCount() {
   if (currentTool === 'none' && count > 0) {
     toolHint.textContent = `${count} annotation${count !== 1 ? 's' : ''} - click to delete`;
   } else if (currentTool === 'none') {
-    toolHint.textContent = 'Select a tool to annotate';
+    toolHint.textContent = 'Select a tool to annotate (1 highlight, 2 arrow, 3 box)';
   }
 }
 
@@ -794,7 +794,7 @@ function setTool(tool: AnnotationTool) {
 
   // Update hint text
   const hints: Record<AnnotationTool, string> = {
-    'none': 'Select a tool to annotate',
+    'none': 'Select a tool to annotate (1 highlight, 2 arrow, 3 box)',
     'highlight': 'Select text to highlight',
     'arrow': 'Click and drag to draw arrow',
     'box': 'Click and drag to draw box'
@@ -1017,14 +1017,54 @@ function init() {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
+    // Don't intercept keys while typing in form fields.
+    const target = e.target as HTMLElement | null;
+    const isTyping = target && (
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable
+    );
+
     // Ctrl+Z or Cmd+Z to undo
     if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
       e.preventDefault();
       undoLastAction();
+      return;
     }
+
+    // Ctrl+S or Cmd+S to save PDF
+    if ((e.ctrlKey || e.metaKey) && e.key === 's' && !savePdfBtn.disabled) {
+      e.preventDefault();
+      savePdfBtn.click();
+      return;
+    }
+
     // Escape to deselect tool
     if (e.key === 'Escape' && currentTool !== 'none') {
       setTool('none');
+      return;
+    }
+
+    if (isTyping) return;
+
+    // Single-key tool shortcuts: 1 highlight, 2 arrow, 3 box, 0 / Esc deselect
+    switch (e.key) {
+      case '1':
+        e.preventDefault();
+        setTool(currentTool === 'highlight' ? 'none' : 'highlight');
+        break;
+      case '2':
+        e.preventDefault();
+        setTool(currentTool === 'arrow' ? 'none' : 'arrow');
+        break;
+      case '3':
+        e.preventDefault();
+        setTool(currentTool === 'box' ? 'none' : 'box');
+        break;
+      case '0':
+        e.preventDefault();
+        setTool('none');
+        break;
     }
   });
 
